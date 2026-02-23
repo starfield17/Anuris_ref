@@ -61,6 +61,9 @@ class AgentLoopRunnerTests(unittest.TestCase):
         self.assertEqual(result.final_text, "final answer")
         self.assertEqual(result.rounds, 1)
         self.assertEqual(result.tool_events, [])
+        first_payload_messages = model.client.chat.completions.request_payloads[0]["messages"]
+        self.assertEqual(first_payload_messages[0]["role"], "system")
+        self.assertIn("You are a coding agent", first_payload_messages[0]["content"])
 
     def test_executes_tool_calls_then_returns_final_text(self):
         tool_calls = [
@@ -123,6 +126,34 @@ class AgentLoopRunnerTests(unittest.TestCase):
         assistant_messages = [message for message in second_request_messages if message.get("role") == "assistant"]
         self.assertTrue(assistant_messages)
         self.assertTrue(all("reasoning_content" in message for message in assistant_messages))
+
+    def test_handles_task_tool_call_via_subagent_callback(self):
+        tool_calls = [make_tool_call("call_1", "task", '{"prompt":"inspect","agent_type":"Explore"}')]
+        responses = [
+            make_response(content="", tool_calls=tool_calls),
+            make_response(content="parent done", tool_calls=None),
+        ]
+        model = FakeModel(responses)
+        executor = AgentToolExecutor(
+            include_task=True,
+            subagent_runner=lambda prompt, agent_type: f"subagent:{agent_type}:{prompt}",
+        )
+        runner = AgentLoopRunner(
+            model=model,
+            tool_executor=executor,
+            max_rounds=4,
+            include_task=True,
+        )
+
+        result = runner.run(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "delegate"},
+            ]
+        )
+
+        self.assertEqual(result.final_text, "parent done")
+        self.assertTrue(any(event.startswith("task -> subagent:Explore:inspect") for event in result.tool_events))
 
 
 if __name__ == "__main__":

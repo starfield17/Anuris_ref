@@ -53,6 +53,10 @@ HELP_TEXT = """[bold cyan]Anuris_API_CLI Help[/bold cyan]
     Toggle or inspect agent mode
     Usage: /agent [on|off|status]
 
+[green]/todos[/green]
+    Show current TodoWrite task board
+    Usage: /todos
+
 [bold yellow]Keyboard Shortcuts:[/bold yellow]
 [blue]Enter[/blue]        Start a new line in your message
 [blue]Ctrl+D[/blue]       Send your message

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..model import ChatModel
-from .tools import TOOL_SCHEMAS, AgentToolExecutor
+from .tools import AgentToolExecutor, build_tool_schemas
 
 
 @dataclass
@@ -16,7 +16,7 @@ class AgentRunResult:
 
 
 class AgentLoopRunner:
-    """Minimal s01+s02 style loop: model -> tool calls -> tool results -> repeat."""
+    """s01+s02 loop with optional s03 todos and s04 subagent dispatch."""
 
     def __init__(
         self,
@@ -24,11 +24,34 @@ class AgentLoopRunner:
         tool_executor: Optional[AgentToolExecutor] = None,
         max_rounds: int = 16,
         require_reasoning_content: bool = False,
+        include_todo: bool = True,
+        include_task: bool = True,
+        include_write_edit: bool = True,
     ):
         self.model = model
-        self.tool_executor = tool_executor or AgentToolExecutor()
         self.max_rounds = max_rounds
         self.require_reasoning_content = require_reasoning_content
+        self.include_todo = include_todo
+        self.include_task = include_task
+        self.include_write_edit = include_write_edit
+
+        if tool_executor is None:
+            self.tool_executor = AgentToolExecutor(
+                include_write_edit=include_write_edit,
+                include_todo=include_todo,
+                include_task=include_task,
+            )
+        else:
+            self.tool_executor = tool_executor
+
+        self.tool_schemas = build_tool_schemas(
+            include_write_edit=include_write_edit,
+            include_todo=include_todo,
+            include_task=include_task,
+        )
+
+        if include_task and getattr(self.tool_executor, "subagent_runner", None) is None:
+            self.tool_executor.set_subagent_runner(self._run_subagent)
 
     def run(
         self,
@@ -39,6 +62,7 @@ class AgentLoopRunner:
             raise ValueError("Invalid messages format")
 
         api_messages = [self._normalize_message(message) for message in messages]
+        api_messages = self._inject_agent_instruction(api_messages)
         if attachments and api_messages and api_messages[-1].get("role") == "user":
             content = [{"type": "text", "text": api_messages[-1]["content"]}]
             content.extend(attachments)
@@ -50,7 +74,7 @@ class AgentLoopRunner:
             response = self.model.create_completion(
                 messages=api_messages,
                 stream=False,
-                tools=TOOL_SCHEMAS,
+                tools=self.tool_schemas,
                 tool_choice="auto",
             )
             message = response.choices[0].message
@@ -87,6 +111,38 @@ class AgentLoopRunner:
 
         raise RuntimeError(f"Agent loop exceeded max rounds ({self.max_rounds})")
 
+    def get_todo_snapshot(self) -> str:
+        """Expose current TodoWrite board for UI commands."""
+        return self.tool_executor.get_todo_snapshot()
+
+    def _run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
+        """Run a fresh-context subagent and return only its final summary."""
+        allow_write_edit = agent_type != "Explore"
+        sub_executor = AgentToolExecutor(
+            workspace_root=self.tool_executor.workspace_root,
+            include_write_edit=allow_write_edit,
+            include_todo=False,
+            include_task=False,
+        )
+        sub_runner = AgentLoopRunner(
+            model=self.model,
+            tool_executor=sub_executor,
+            max_rounds=max(4, self.max_rounds // 2),
+            require_reasoning_content=self.require_reasoning_content,
+            include_todo=False,
+            include_task=False,
+            include_write_edit=allow_write_edit,
+        )
+        sub_messages = [
+            {
+                "role": "system",
+                "content": "You are a coding subagent. Complete the task and return a concise summary.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        result = sub_runner.run(sub_messages)
+        return result.final_text or "(no summary)"
+
     @staticmethod
     def _parse_args(raw_args: Optional[str]) -> Dict[str, Any]:
         if not raw_args:
@@ -113,3 +169,18 @@ class AgentLoopRunner:
         if self.require_reasoning_content and normalized.get("role") == "assistant":
             normalized.setdefault("reasoning_content", None)
         return normalized
+
+    def _inject_agent_instruction(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        instruction_lines = [
+            "You are a coding agent. Prefer tools over long prose.",
+        ]
+        if self.include_todo:
+            instruction_lines.append(
+                "Use TodoWrite for multi-step tasks. Keep exactly one item in_progress."
+            )
+        if self.include_task:
+            instruction_lines.append(
+                "Use task to delegate subtasks with fresh context when helpful."
+            )
+        instruction = "\n".join(instruction_lines)
+        return [{"role": "system", "content": instruction}] + messages

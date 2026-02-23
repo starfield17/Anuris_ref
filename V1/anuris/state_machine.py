@@ -43,7 +43,10 @@ class ChatStateMachine:
             self.history,
             self.attachment_manager,
             self.ui,
-            extra_handlers={"agent": self._handle_agent_command},
+            extra_handlers={
+                "agent": self._handle_agent_command,
+                "todos": self._handle_todos_command,
+            },
         )
         self.stream_renderer = StreamRenderer(self.ui)
         self.current_state = ChatState.IDLE
@@ -223,6 +226,10 @@ class ChatStateMachine:
             self.ui.display_message("Agent mode disabled", style="yellow")
             return
         self.ui.display_message("Usage: /agent [on|off|status]", style="yellow")
+
+    def _handle_todos_command(self, args: str) -> None:
+        """Display current TodoWrite board from the agent runner."""
+        self.ui.display_message(self.agent_runner.get_todo_snapshot(), style="cyan")
 
     def _provider_requires_reasoning_content(self) -> bool:
         base_url = (self.config.base_url or "").lower()
