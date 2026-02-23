@@ -47,6 +47,10 @@ class ChatStateMachine:
                 "agent": self._handle_agent_command,
                 "todos": self._handle_todos_command,
                 "tasks": self._handle_tasks_command,
+                "skills": self._handle_skills_command,
+                "compact": self._handle_compact_command,
+                "background": self._handle_background_command,
+                "bg": self._handle_background_command,
             },
         )
         self.stream_renderer = StreamRenderer(self.ui)
@@ -182,6 +186,10 @@ class ChatStateMachine:
     def _handle_agent_responding_state(self) -> ChatState:
         """Handle one s01+s02 style agent loop response."""
         try:
+            if self.agent_runner.should_auto_compact(self.history.messages):
+                self.history.messages = self.agent_runner.compact_messages(self.history.messages)
+                self.ui.display_message("[agent] context compacted before run", style="dim")
+
             messages = self.history.messages + [{"role": "user", "content": self.context["user_input"]}]
             api_attachments = (
                 self.attachment_manager.prepare_for_api() if self.attachment_manager.attachments else None
@@ -238,6 +246,21 @@ class ChatStateMachine:
     def _handle_tasks_command(self, args: str) -> None:
         """Display current persistent task board from the agent runner."""
         self.ui.display_message(self.agent_runner.get_task_snapshot(), style="cyan")
+
+    def _handle_skills_command(self, args: str) -> None:
+        """Display currently available skill catalog."""
+        self.ui.display_message(self.agent_runner.get_skill_snapshot(), style="cyan")
+
+    def _handle_compact_command(self, args: str) -> None:
+        """Manually compact conversation history."""
+        focus = args.strip() if args else None
+        self.history.messages = self.agent_runner.compact_messages(self.history.messages, focus=focus)
+        self.ui.display_message("Conversation compacted for continuity", style="green")
+
+    def _handle_background_command(self, args: str) -> None:
+        """Display background task status, optionally for one task id."""
+        task_id = args.strip() if args and args.strip() else None
+        self.ui.display_message(self.agent_runner.get_background_snapshot(task_id), style="cyan")
 
     def _provider_requires_reasoning_content(self) -> bool:
         base_url = (self.config.base_url or "").lower()

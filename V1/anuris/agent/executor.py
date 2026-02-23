@@ -2,6 +2,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .background import BackgroundManager
+from .skills import SkillLoader
 from .tasks import PersistentTaskManager
 from .todo import TodoManager
 
@@ -16,16 +18,26 @@ class AgentToolExecutor:
         include_todo: bool = True,
         include_task: bool = False,
         include_task_board: bool = True,
+        include_skill_loading: bool = True,
+        include_background_tasks: bool = True,
         subagent_runner: Optional[Callable[[str, str], str]] = None,
         todo_manager: Optional[TodoManager] = None,
         task_manager: Optional[PersistentTaskManager] = None,
+        skill_loader: Optional[SkillLoader] = None,
+        background_manager: Optional[BackgroundManager] = None,
     ):
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
         self.todo_manager = todo_manager if include_todo else None
         self.subagent_runner = subagent_runner if include_task else None
         self.task_manager = task_manager if include_task_board else None
+        self.skill_loader = skill_loader if include_skill_loading else None
+        self.background_manager = background_manager if include_background_tasks else None
         if include_task_board and self.task_manager is None:
             self.task_manager = PersistentTaskManager(self.workspace_root / ".anuris_tasks")
+        if include_skill_loading and self.skill_loader is None:
+            self.skill_loader = SkillLoader(self.workspace_root)
+        if include_background_tasks and self.background_manager is None:
+            self.background_manager = BackgroundManager(self.workspace_root)
 
         self.handlers: Dict[str, Callable[..., str]] = {
             "bash": lambda **kw: self.run_bash(kw["command"]),
@@ -57,6 +69,14 @@ class AgentToolExecutor:
                     "task_list": lambda **kw: self.run_task_list(),
                 }
             )
+        if include_skill_loading:
+            self.handlers["load_skill"] = lambda **kw: self.run_load_skill(kw["name"])
+        if include_background_tasks:
+            self.handlers["background_run"] = lambda **kw: self.run_background(
+                kw["command"],
+                int(kw.get("timeout", 300)),
+            )
+            self.handlers["check_background"] = lambda **kw: self.run_check_background(kw.get("task_id"))
 
     def set_subagent_runner(self, runner: Callable[[str, str], str]) -> None:
         """Attach a subagent callback for the task tool."""
@@ -158,6 +178,26 @@ class AgentToolExecutor:
             return "Error: Task manager unavailable"
         return self.task_manager.list_all()
 
+    def run_load_skill(self, name: str) -> str:
+        if not self.skill_loader:
+            return "Error: Skill loader unavailable"
+        return self.skill_loader.load(name)
+
+    def run_background(self, command: str, timeout: int = 300) -> str:
+        if not self.background_manager:
+            return "Error: Background manager unavailable"
+        return self.background_manager.run(command, timeout=timeout)
+
+    def run_check_background(self, task_id: Optional[str] = None) -> str:
+        if not self.background_manager:
+            return "Error: Background manager unavailable"
+        return self.background_manager.check(task_id)
+
+    def drain_background_notifications(self) -> List[Dict[str, str]]:
+        if not self.background_manager:
+            return []
+        return self.background_manager.drain_notifications()
+
     def get_todo_snapshot(self) -> str:
         if not self.todo_manager:
             return "Todo manager unavailable"
@@ -167,3 +207,18 @@ class AgentToolExecutor:
         if not self.task_manager:
             return "Task manager unavailable"
         return self.task_manager.list_all()
+
+    def get_skill_snapshot(self) -> str:
+        if not self.skill_loader:
+            return "Skill loader unavailable"
+        return self.skill_loader.render_catalog()
+
+    def get_skill_descriptions(self) -> str:
+        if not self.skill_loader:
+            return "(skill loading disabled)"
+        return self.skill_loader.descriptions()
+
+    def get_background_snapshot(self, task_id: Optional[str] = None) -> str:
+        if not self.background_manager:
+            return "Background manager unavailable"
+        return self.background_manager.check(task_id)

@@ -202,11 +202,64 @@ def _task_list_schema() -> Dict[str, Any]:
     }
 
 
+def _load_skill_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "load_skill",
+            "description": "Load specialized knowledge by skill name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    }
+
+
+def _background_run_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "background_run",
+            "description": "Run a command in background and return a task id immediately.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "timeout": {"type": "integer"},
+                },
+                "required": ["command"],
+            },
+        },
+    }
+
+
+def _check_background_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "check_background",
+            "description": "Check one background task status or list all tasks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                },
+            },
+        },
+    }
+
+
 def build_tool_schemas(
     include_write_edit: bool = True,
     include_todo: bool = True,
     include_task: bool = True,
     include_task_board: bool = True,
+    include_skill_loading: bool = True,
+    include_background_tasks: bool = True,
 ) -> List[Dict[str, Any]]:
     """Build tool schema list by feature flags."""
     schemas = [_bash_schema(), _read_schema()]
@@ -225,6 +278,10 @@ def build_tool_schemas(
                 _task_list_schema(),
             ]
         )
+    if include_skill_loading:
+        schemas.append(_load_skill_schema())
+    if include_background_tasks:
+        schemas.extend([_background_run_schema(), _check_background_schema()])
     return schemas
 
 

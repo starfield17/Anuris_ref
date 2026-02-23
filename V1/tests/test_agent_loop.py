@@ -48,6 +48,22 @@ def make_tool_call(tool_id, name, arguments):
     return SimpleNamespace(id=tool_id, function=function)
 
 
+class FakeBackgroundManager:
+    def __init__(self, notifications=None):
+        self.notifications = list(notifications or [])
+
+    def run(self, command, timeout=300):
+        return "started"
+
+    def check(self, task_id=None):
+        return "No background tasks."
+
+    def drain_notifications(self):
+        items = list(self.notifications)
+        self.notifications.clear()
+        return items
+
+
 class AgentLoopRunnerTests(unittest.TestCase):
     def test_returns_direct_content_without_tools(self):
         model = FakeModel([make_response("final answer", tool_calls=None)])
@@ -211,6 +227,80 @@ class AgentLoopRunnerTests(unittest.TestCase):
             task_file = workspace / ".anuris_tasks" / "task_1.json"
             self.assertTrue(task_file.exists())
             self.assertIn("task_create", result.tool_events[0])
+
+    def test_executes_load_skill_tool_calls(self):
+        tool_calls = [make_tool_call("call_1", "load_skill", '{"name":"python"}')]
+        responses = [
+            make_response(content="", tool_calls=tool_calls),
+            make_response(content="used skill", tool_calls=None),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            skills_dir = workspace / ".anuris_skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            (skills_dir / "python.md").write_text(
+                "---\n"
+                "description: Python coding conventions\n"
+                "---\n"
+                "Prefer readable code over clever tricks.",
+                encoding="utf-8",
+            )
+            model = FakeModel(responses)
+            runner = AgentLoopRunner(
+                model=model,
+                tool_executor=AgentToolExecutor(workspace_root=workspace, include_skill_loading=True),
+                max_rounds=4,
+                include_skill_loading=True,
+            )
+
+            result = runner.run(
+                [
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "need coding style"},
+                ]
+            )
+
+            self.assertEqual(result.final_text, "used skill")
+            self.assertTrue(any(event.startswith("load_skill -> <skill name=\"python\">") for event in result.tool_events))
+
+    def test_injects_background_notifications_before_round(self):
+        responses = [make_response(content="done", tool_calls=None)]
+        model = FakeModel(responses)
+        notifications = [
+            {
+                "task_id": "abc12345",
+                "status": "completed",
+                "result": "lint clean",
+                "command": "ruff check .",
+            }
+        ]
+        executor = AgentToolExecutor(
+            include_background_tasks=True,
+            background_manager=FakeBackgroundManager(notifications),
+        )
+        runner = AgentLoopRunner(
+            model=model,
+            tool_executor=executor,
+            include_background_tasks=True,
+            max_rounds=3,
+        )
+
+        result = runner.run(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "continue"},
+            ]
+        )
+
+        self.assertEqual(result.final_text, "done")
+        first_payload_messages = model.client.chat.completions.request_payloads[0]["messages"]
+        background_messages = [
+            message
+            for message in first_payload_messages
+            if message.get("role") == "user" and "<background-results>" in str(message.get("content", ""))
+        ]
+        self.assertTrue(background_messages)
 
 
 if __name__ == "__main__":

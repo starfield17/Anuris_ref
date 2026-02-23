@@ -60,6 +60,9 @@ From interactive CLI:
 - `/agent [on|off|status]`
 - `/todos` (renders current TodoWrite board from agent loop)
 - `/tasks` (renders persistent file-backed task board from agent loop)
+- `/skills` (renders discovered local skills for `load_skill`)
+- `/compact [focus]` (manually compacts conversation context for long sessions)
+- `/background [task_id]` (shows background task status; alias: `/bg`)
 
 ## 5) Reasoning Switch (Provider-aware)
 
@@ -91,6 +94,17 @@ Implemented:
 - s04: subagent support (`task` tool)
   - child agent loop can run with fresh context
   - capability gating by `agent_type`
+- s05: skill loading (`load_skill`)
+  - two-layer pattern: metadata in system instruction + full body via tool result
+  - skill discovery dirs: `.anuris_skills/` then `skills/` under workspace
+- s06: context management
+  - micro-compact clears older large tool outputs
+  - auto-compact triggers by token threshold with transcript snapshot in `.anuris_transcripts/`
+  - manual compact available via `/compact [focus]`
+- s08: background tasks
+  - tools: `background_run`, `check_background`
+  - background completion notifications are drained into loop context each round
+  - CLI inspection via `/background [task_id]` (or `/bg`)
 - s07: persistent task system (`task_create/task_get/task_update/task_list`)
   - task data is stored under `.anuris_tasks/` in the workspace
   - supports status transitions and dependency updates
@@ -108,6 +122,9 @@ Agent internals:
 - `V1/anuris/agent/loop.py`
 - `V1/anuris/agent/executor.py`
 - `V1/anuris/agent/schemas.py`
+- `V1/anuris/agent/skills.py`
+- `V1/anuris/agent/compact.py`
+- `V1/anuris/agent/background.py`
 - `V1/anuris/agent/todo.py`
 - `V1/anuris/agent/tools.py` (compatibility facade)
 - `V1/anuris/agent/tasks.py`
@@ -124,6 +141,8 @@ Tests:
 
 - `V1/tests/test_agent_loop.py`
 - `V1/tests/test_agent_tools.py`
+- `V1/tests/test_agent_compact.py`
+- `V1/tests/test_agent_loop.py` (background notifications coverage)
 - `V1/tests/test_model.py`
 - `V1/tests/test_bootstrap.py`
 - `V1/tests/test_commands.py`
@@ -153,8 +172,6 @@ python -m py_compile anuris/agent/loop.py anuris/state_machine.py tests/test_age
 ## 10) Suggested Next Steps
 
 - Improve progress UX (single-line spinner, throttled tool logs, optional verbose mode).
-- Add s05 skill loading (`load_skill`) with two-layer metadata/body injection.
-- Add s06 context management (micro-compact + manual compact command).
 - Expand subagent policy (explicit read-only explore mode and stricter tool budgets).
 - Add higher-level integration smoke tests for `/agent` command flow.
 

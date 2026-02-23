@@ -5,6 +5,26 @@ from pathlib import Path
 from anuris.agent.tools import AgentToolExecutor, TodoManager, build_tool_schemas
 
 
+class FakeBackgroundManager:
+    def __init__(self):
+        self.run_calls = []
+        self.check_calls = []
+        self.notifications = []
+
+    def run(self, command, timeout=300):
+        self.run_calls.append((command, timeout))
+        return "Background task fake123 started"
+
+    def check(self, task_id=None):
+        self.check_calls.append(task_id)
+        return f"check:{task_id or 'all'}"
+
+    def drain_notifications(self):
+        items = list(self.notifications)
+        self.notifications.clear()
+        return items
+
+
 class AgentToolsTests(unittest.TestCase):
     def test_todo_manager_update_and_render(self):
         manager = TodoManager()
@@ -35,6 +55,8 @@ class AgentToolsTests(unittest.TestCase):
             include_todo=False,
             include_task=True,
             include_task_board=False,
+            include_skill_loading=False,
+            include_background_tasks=False,
         )
         names = [schema["function"]["name"] for schema in schemas]
         self.assertEqual(names, ["bash", "read_file", "task"])
@@ -45,12 +67,38 @@ class AgentToolsTests(unittest.TestCase):
             include_todo=False,
             include_task=False,
             include_task_board=True,
+            include_skill_loading=False,
+            include_background_tasks=False,
         )
         names = [schema["function"]["name"] for schema in schemas]
         self.assertEqual(
             names,
             ["bash", "read_file", "task_create", "task_get", "task_update", "task_list"],
         )
+
+    def test_build_tool_schemas_includes_load_skill(self):
+        schemas = build_tool_schemas(
+            include_write_edit=False,
+            include_todo=False,
+            include_task=False,
+            include_task_board=False,
+            include_skill_loading=True,
+            include_background_tasks=False,
+        )
+        names = [schema["function"]["name"] for schema in schemas]
+        self.assertEqual(names, ["bash", "read_file", "load_skill"])
+
+    def test_build_tool_schemas_includes_background_tools(self):
+        schemas = build_tool_schemas(
+            include_write_edit=False,
+            include_todo=False,
+            include_task=False,
+            include_task_board=False,
+            include_skill_loading=False,
+            include_background_tasks=True,
+        )
+        names = [schema["function"]["name"] for schema in schemas]
+        self.assertEqual(names, ["bash", "read_file", "background_run", "check_background"])
 
     def test_task_tool_uses_subagent_runner(self):
         executor = AgentToolExecutor(
@@ -79,6 +127,40 @@ class AgentToolsTests(unittest.TestCase):
 
             listed = executor.execute("task_list", {})
             self.assertIn("[>] #1: Ship feature @lead", listed)
+
+    def test_load_skill_returns_skill_body_from_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            skills_dir = workspace / ".anuris_skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            (skills_dir / "git.md").write_text(
+                "---\n"
+                "description: Git workflow helpers\n"
+                "tags: git,workflow\n"
+                "---\n"
+                "Use small commits and clear messages.",
+                encoding="utf-8",
+            )
+
+            executor = AgentToolExecutor(workspace_root=workspace, include_skill_loading=True)
+            loaded = executor.execute("load_skill", {"name": "git"})
+            self.assertIn('<skill name="git">', loaded)
+            self.assertIn("Use small commits", loaded)
+            self.assertIn("- git: Git workflow helpers", executor.get_skill_snapshot())
+
+    def test_background_run_and_check_use_background_manager(self):
+        fake_bg = FakeBackgroundManager()
+        executor = AgentToolExecutor(
+            include_background_tasks=True,
+            background_manager=fake_bg,
+        )
+        started = executor.execute("background_run", {"command": "echo hi", "timeout": 5})
+        self.assertIn("Background task", started)
+        self.assertEqual(fake_bg.run_calls, [("echo hi", 5)])
+
+        check = executor.execute("check_background", {"task_id": "fake123"})
+        self.assertEqual(check, "check:fake123")
+        self.assertEqual(executor.get_background_snapshot(), "check:all")
 
 
 if __name__ == "__main__":

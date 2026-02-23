@@ -1,8 +1,10 @@
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..model import ChatModel
+from .compact import ContextCompactor
 from .tools import AgentToolExecutor, build_tool_schemas
 
 
@@ -16,7 +18,7 @@ class AgentRunResult:
 
 
 class AgentLoopRunner:
-    """s01+s02 loop with optional s03/s04/s07 capabilities."""
+    """s01+s02 loop with optional s03/s04/s05/s06/s07/s08 capabilities."""
 
     def __init__(
         self,
@@ -28,6 +30,11 @@ class AgentLoopRunner:
         include_task: bool = True,
         include_write_edit: bool = True,
         include_task_board: bool = True,
+        include_skill_loading: bool = True,
+        include_background_tasks: bool = True,
+        include_compaction: bool = True,
+        compaction_threshold_tokens: int = 50000,
+        keep_recent_tool_messages: int = 3,
     ):
         self.model = model
         self.max_rounds = max_rounds
@@ -36,6 +43,9 @@ class AgentLoopRunner:
         self.include_task = include_task
         self.include_write_edit = include_write_edit
         self.include_task_board = include_task_board
+        self.include_skill_loading = include_skill_loading
+        self.include_background_tasks = include_background_tasks
+        self.include_compaction = include_compaction
 
         if tool_executor is None:
             self.tool_executor = AgentToolExecutor(
@@ -43,6 +53,8 @@ class AgentLoopRunner:
                 include_todo=include_todo,
                 include_task=include_task,
                 include_task_board=include_task_board,
+                include_skill_loading=include_skill_loading,
+                include_background_tasks=include_background_tasks,
             )
         else:
             self.tool_executor = tool_executor
@@ -52,10 +64,20 @@ class AgentLoopRunner:
             include_todo=include_todo,
             include_task=include_task,
             include_task_board=include_task_board,
+            include_skill_loading=include_skill_loading,
+            include_background_tasks=include_background_tasks,
         )
 
         if include_task and getattr(self.tool_executor, "subagent_runner", None) is None:
             self.tool_executor.set_subagent_runner(self._run_subagent)
+
+        transcript_dir = Path(getattr(self.tool_executor, "workspace_root", Path.cwd())) / ".anuris_transcripts"
+        self.compactor = ContextCompactor(
+            model=self.model,
+            transcript_dir=transcript_dir,
+            keep_recent_tool_messages=keep_recent_tool_messages,
+            threshold_tokens=compaction_threshold_tokens,
+        )
 
     def run(
         self,
@@ -76,6 +98,36 @@ class AgentLoopRunner:
         tool_events: List[str] = []
 
         for round_index in range(1, self.max_rounds + 1):
+            if self.include_background_tasks:
+                notifications = self.tool_executor.drain_background_notifications()
+                if notifications:
+                    lines = [
+                        f"[bg:{item['task_id']}] {item['status']}: {item['result']}"
+                        for item in notifications
+                    ]
+                    text = "\n".join(lines)
+                    api_messages.append(
+                        {
+                            "role": "user",
+                            "content": f"<background-results>\n{text}\n</background-results>",
+                        }
+                    )
+                    api_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "Noted background task updates.",
+                        }
+                    )
+                    if progress_callback:
+                        progress_callback(f"[agent] received {len(notifications)} background update(s)")
+
+            if self.include_compaction:
+                self.compactor.micro_compact(api_messages)
+                if self.compactor.should_auto_compact(api_messages):
+                    api_messages = self.compactor.auto_compact(api_messages)
+                    if progress_callback:
+                        progress_callback("[agent] context auto-compacted")
+
             if progress_callback:
                 progress_callback(f"[agent] round {round_index}...")
             response = self.model.create_completion(
@@ -129,6 +181,24 @@ class AgentLoopRunner:
         """Expose current persistent task board for UI commands."""
         return self.tool_executor.get_task_snapshot()
 
+    def get_skill_snapshot(self) -> str:
+        """Expose currently discovered skills for CLI commands."""
+        return self.tool_executor.get_skill_snapshot()
+
+    def get_background_snapshot(self, task_id: Optional[str] = None) -> str:
+        """Expose current background task status for CLI commands."""
+        return self.tool_executor.get_background_snapshot(task_id)
+
+    def should_auto_compact(self, messages: List[Dict[str, Any]]) -> bool:
+        """Check whether history should be compacted before the next run."""
+        if not self.include_compaction:
+            return False
+        return self.compactor.should_auto_compact(messages)
+
+    def compact_messages(self, messages: List[Dict[str, Any]], focus: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Manually compact a message list and return the new conversation skeleton."""
+        return self.compactor.auto_compact(messages, focus=focus)
+
     def _run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
         """Run a fresh-context subagent and return only its final summary."""
         allow_write_edit = agent_type != "Explore"
@@ -138,6 +208,8 @@ class AgentLoopRunner:
             include_todo=False,
             include_task=False,
             include_task_board=False,
+            include_skill_loading=False,
+            include_background_tasks=False,
         )
         sub_runner = AgentLoopRunner(
             model=self.model,
@@ -148,6 +220,9 @@ class AgentLoopRunner:
             include_task=False,
             include_write_edit=allow_write_edit,
             include_task_board=False,
+            include_skill_loading=False,
+            include_background_tasks=False,
+            include_compaction=False,
         )
         sub_messages = [
             {
@@ -201,6 +276,16 @@ class AgentLoopRunner:
         if self.include_task_board:
             instruction_lines.append(
                 "Use task_create/task_update/task_list to persist longer-running plans."
+            )
+        if self.include_skill_loading:
+            instruction_lines.append(
+                "Use load_skill for specialized repo workflows when needed."
+            )
+            instruction_lines.append("Skills available:")
+            instruction_lines.append(self.tool_executor.get_skill_descriptions())
+        if self.include_background_tasks:
+            instruction_lines.append(
+                "Use background_run for long-running commands and check_background to monitor progress."
             )
         instruction = "\n".join(instruction_lines)
         return [{"role": "system", "content": instruction}] + messages

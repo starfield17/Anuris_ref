@@ -61,6 +61,19 @@ HELP_TEXT = """[bold cyan]Anuris_API_CLI Help[/bold cyan]
     Show persistent task board
     Usage: /tasks
 
+[green]/skills[/green]
+    Show discovered local skills for agent mode
+    Usage: /skills
+
+[green]/compact [focus][/green]
+    Compact conversation history using summary context
+    Usage: /compact [focus]
+
+[green]/background [task_id][/green]
+    Show background task status (or all tasks)
+    Usage: /background [task_id]
+    Alias: /bg [task_id]
+
 [bold yellow]Keyboard Shortcuts:[/bold yellow]
 [blue]Enter[/blue]        Start a new line in your message
 [blue]Ctrl+D[/blue]       Send your message

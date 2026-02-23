@@ -67,6 +67,9 @@ Agent mode is enabled by default at startup. Use `/agent off` to switch back to 
 * `/agent [on|off|status]` – Toggle agent tool loop mode
 * `/todos` – Show in-memory TodoWrite board
 * `/tasks` – Show persistent task board (`.anuris_tasks/`)
+* `/skills` – Show discovered skills (`.anuris_skills/`, `skills/`)
+* `/compact [focus]` – Compact long chat history into summary context (`.anuris_transcripts/`)
+* `/background [task_id]` or `/bg [task_id]` – Inspect background tasks in agent mode
 
 ### Keyboard Shortcuts
 
