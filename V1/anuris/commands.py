@@ -57,6 +57,10 @@ HELP_TEXT = """[bold cyan]Anuris_API_CLI Help[/bold cyan]
     Show current TodoWrite task board
     Usage: /todos
 
+[green]/tasks[/green]
+    Show persistent task board
+    Usage: /tasks
+
 [bold yellow]Keyboard Shortcuts:[/bold yellow]
 [blue]Enter[/blue]        Start a new line in your message
 [blue]Ctrl+D[/blue]       Send your message

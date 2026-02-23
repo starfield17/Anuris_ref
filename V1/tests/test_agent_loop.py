@@ -177,6 +177,41 @@ class AgentLoopRunnerTests(unittest.TestCase):
         self.assertTrue(any(event.startswith("[agent] round 1") for event in events))
         self.assertTrue(any(event.startswith("[tool] read_file ->") for event in events))
 
+    def test_executes_persistent_task_tool_calls(self):
+        tool_calls = [
+            make_tool_call(
+                "call_1",
+                "task_create",
+                '{"subject":"Investigate regression","description":"Find root cause"}',
+            )
+        ]
+        responses = [
+            make_response(content="", tool_calls=tool_calls),
+            make_response(content="tracked", tool_calls=None),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            model = FakeModel(responses)
+            runner = AgentLoopRunner(
+                model=model,
+                tool_executor=AgentToolExecutor(workspace_root=workspace, include_task_board=True),
+                max_rounds=4,
+                include_task_board=True,
+            )
+
+            result = runner.run(
+                [
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "track this task"},
+                ]
+            )
+
+            self.assertEqual(result.final_text, "tracked")
+            task_file = workspace / ".anuris_tasks" / "task_1.json"
+            self.assertTrue(task_file.exists())
+            self.assertIn("task_create", result.tool_events[0])
+
 
 if __name__ == "__main__":
     unittest.main()

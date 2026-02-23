@@ -16,7 +16,7 @@ class AgentRunResult:
 
 
 class AgentLoopRunner:
-    """s01+s02 loop with optional s03 todos and s04 subagent dispatch."""
+    """s01+s02 loop with optional s03/s04/s07 capabilities."""
 
     def __init__(
         self,
@@ -27,6 +27,7 @@ class AgentLoopRunner:
         include_todo: bool = True,
         include_task: bool = True,
         include_write_edit: bool = True,
+        include_task_board: bool = True,
     ):
         self.model = model
         self.max_rounds = max_rounds
@@ -34,12 +35,14 @@ class AgentLoopRunner:
         self.include_todo = include_todo
         self.include_task = include_task
         self.include_write_edit = include_write_edit
+        self.include_task_board = include_task_board
 
         if tool_executor is None:
             self.tool_executor = AgentToolExecutor(
                 include_write_edit=include_write_edit,
                 include_todo=include_todo,
                 include_task=include_task,
+                include_task_board=include_task_board,
             )
         else:
             self.tool_executor = tool_executor
@@ -48,6 +51,7 @@ class AgentLoopRunner:
             include_write_edit=include_write_edit,
             include_todo=include_todo,
             include_task=include_task,
+            include_task_board=include_task_board,
         )
 
         if include_task and getattr(self.tool_executor, "subagent_runner", None) is None:
@@ -121,6 +125,10 @@ class AgentLoopRunner:
         """Expose current TodoWrite board for UI commands."""
         return self.tool_executor.get_todo_snapshot()
 
+    def get_task_snapshot(self) -> str:
+        """Expose current persistent task board for UI commands."""
+        return self.tool_executor.get_task_snapshot()
+
     def _run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
         """Run a fresh-context subagent and return only its final summary."""
         allow_write_edit = agent_type != "Explore"
@@ -129,6 +137,7 @@ class AgentLoopRunner:
             include_write_edit=allow_write_edit,
             include_todo=False,
             include_task=False,
+            include_task_board=False,
         )
         sub_runner = AgentLoopRunner(
             model=self.model,
@@ -138,6 +147,7 @@ class AgentLoopRunner:
             include_todo=False,
             include_task=False,
             include_write_edit=allow_write_edit,
+            include_task_board=False,
         )
         sub_messages = [
             {
@@ -187,6 +197,10 @@ class AgentLoopRunner:
         if self.include_task:
             instruction_lines.append(
                 "Use task to delegate subtasks with fresh context when helpful."
+            )
+        if self.include_task_board:
+            instruction_lines.append(
+                "Use task_create/task_update/task_list to persist longer-running plans."
             )
         instruction = "\n".join(instruction_lines)
         return [{"role": "system", "content": instruction}] + messages

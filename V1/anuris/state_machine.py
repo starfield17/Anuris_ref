@@ -34,7 +34,7 @@ class ChatStateMachine:
         self.history = ChatHistory(system_prompt=resolved_system_prompt)
         self.model = ChatModel(config)
         self.attachment_manager = AttachmentManager()
-        self.agent_mode = False
+        self.agent_mode = True
         self.agent_runner = AgentLoopRunner(
             self.model,
             require_reasoning_content=self._provider_requires_reasoning_content(),
@@ -46,6 +46,7 @@ class ChatStateMachine:
             extra_handlers={
                 "agent": self._handle_agent_command,
                 "todos": self._handle_todos_command,
+                "tasks": self._handle_tasks_command,
             },
         )
         self.stream_renderer = StreamRenderer(self.ui)
@@ -233,6 +234,10 @@ class ChatStateMachine:
     def _handle_todos_command(self, args: str) -> None:
         """Display current TodoWrite board from the agent runner."""
         self.ui.display_message(self.agent_runner.get_todo_snapshot(), style="cyan")
+
+    def _handle_tasks_command(self, args: str) -> None:
+        """Display current persistent task board from the agent runner."""
+        self.ui.display_message(self.agent_runner.get_task_snapshot(), style="cyan")
 
     def _provider_requires_reasoning_content(self) -> bool:
         base_url = (self.config.base_url or "").lower()

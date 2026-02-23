@@ -53,6 +53,8 @@ Run the CLI:
 python Anuris_rebuild.py --api-key <YOUR_API_KEY> --model <MODEL_NAME>
 ```
 
+Agent mode is enabled by default at startup. Use `/agent off` to switch back to standard chat mode.
+
 ### Commands
 
 * `/clear` – Clear chat history and attachments
@@ -62,6 +64,9 @@ python Anuris_rebuild.py --api-key <YOUR_API_KEY> --model <MODEL_NAME>
 * `/detach [index]` – Remove attachments
 * `/files` – List current attachments
 * `/help` – Show help and available commands
+* `/agent [on|off|status]` – Toggle agent tool loop mode
+* `/todos` – Show in-memory TodoWrite board
+* `/tasks` – Show persistent task board (`.anuris_tasks/`)
 
 ### Keyboard Shortcuts
 
