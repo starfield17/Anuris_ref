@@ -188,9 +188,12 @@ class ChatStateMachine:
             current_attachments = self.attachment_manager.attachments.copy()
             self.attachment_manager.clear_attachments()
 
-            result = self.agent_runner.run(messages, api_attachments)
-            for event in result.tool_events:
-                self.ui.display_message(f"[tool] {event}", style="dim")
+            self.ui.display_message("[agent] processing request...", style="dim")
+            result = self.agent_runner.run(
+                messages,
+                api_attachments,
+                progress_callback=lambda event: self.ui.display_message(event, style="dim"),
+            )
 
             if result.final_text:
                 self.ui.display_message("\nAnuris: ", style="bold blue", end="")

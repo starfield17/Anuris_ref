@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..model import ChatModel
 from .tools import AgentToolExecutor, build_tool_schemas
@@ -57,6 +57,7 @@ class AgentLoopRunner:
         self,
         messages: List[Dict[str, Any]],
         attachments: Optional[List[Dict[str, Any]]] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
     ) -> AgentRunResult:
         if not messages or not isinstance(messages, list):
             raise ValueError("Invalid messages format")
@@ -71,6 +72,8 @@ class AgentLoopRunner:
         tool_events: List[str] = []
 
         for round_index in range(1, self.max_rounds + 1):
+            if progress_callback:
+                progress_callback(f"[agent] round {round_index}...")
             response = self.model.create_completion(
                 messages=api_messages,
                 stream=False,
@@ -100,7 +103,10 @@ class AgentLoopRunner:
             for tool_call in tool_calls:
                 args = self._parse_args(tool_call.function.arguments)
                 tool_output = self.tool_executor.execute(tool_call.function.name, args)
-                tool_events.append(f"{tool_call.function.name} -> {tool_output[:200]}")
+                event = f"{tool_call.function.name} -> {tool_output[:200]}"
+                tool_events.append(event)
+                if progress_callback:
+                    progress_callback(f"[tool] {event}")
                 api_messages.append(
                     {
                         "role": "tool",

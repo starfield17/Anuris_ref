@@ -155,6 +155,28 @@ class AgentLoopRunnerTests(unittest.TestCase):
         self.assertEqual(result.final_text, "parent done")
         self.assertTrue(any(event.startswith("task -> subagent:Explore:inspect") for event in result.tool_events))
 
+    def test_progress_callback_receives_round_and_tool_events(self):
+        tool_calls = [make_tool_call("call_1", "read_file", '{"path":"missing.txt"}')]
+        responses = [
+            make_response(content="", tool_calls=tool_calls),
+            make_response(content="done", tool_calls=None),
+        ]
+        model = FakeModel(responses)
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=4)
+        events = []
+
+        result = runner.run(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "go"},
+            ],
+            progress_callback=events.append,
+        )
+
+        self.assertEqual(result.final_text, "done")
+        self.assertTrue(any(event.startswith("[agent] round 1") for event in events))
+        self.assertTrue(any(event.startswith("[tool] read_file ->") for event in events))
+
 
 if __name__ == "__main__":
     unittest.main()
