@@ -1,4 +1,6 @@
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -264,6 +266,47 @@ class AgentLoopRunnerTests(unittest.TestCase):
             self.assertEqual(result.final_text, "used skill")
             self.assertTrue(any(event.startswith("load_skill -> <skill name=\"python\">") for event in result.tool_events))
 
+    def test_uses_configured_workspace_root_for_skill_loading(self):
+        tool_calls = [make_tool_call("call_1", "load_skill", '{"name":"python"}')]
+        responses = [
+            make_response(content="", tool_calls=tool_calls),
+            make_response(content="used skill", tool_calls=None),
+        ]
+
+        with tempfile.TemporaryDirectory() as workspace_dir, tempfile.TemporaryDirectory() as other_dir:
+            workspace = Path(workspace_dir)
+            skills_dir = workspace / "skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            (skills_dir / "python.md").write_text(
+                "---\n"
+                "description: Python coding conventions\n"
+                "---\n"
+                "Prefer readable code over clever tricks.",
+                encoding="utf-8",
+            )
+
+            previous_cwd = Path.cwd()
+            os.chdir(other_dir)
+            try:
+                model = FakeModel(responses)
+                runner = AgentLoopRunner(
+                    model=model,
+                    workspace_root=workspace,
+                    include_skill_loading=True,
+                    max_rounds=4,
+                )
+                result = runner.run(
+                    [
+                        {"role": "system", "content": "system"},
+                        {"role": "user", "content": "need coding style"},
+                    ]
+                )
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(result.final_text, "used skill")
+            self.assertTrue(any(event.startswith("load_skill -> <skill name=\"python\">") for event in result.tool_events))
+
     def test_injects_background_notifications_before_round(self):
         responses = [make_response(content="done", tool_calls=None)]
         model = FakeModel(responses)
@@ -301,6 +344,166 @@ class AgentLoopRunnerTests(unittest.TestCase):
             if message.get("role") == "user" and "<background-results>" in str(message.get("content", ""))
         ]
         self.assertTrue(background_messages)
+
+    def test_readonly_teammate_blocks_write_and_unsafe_bash(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            model = FakeModel([make_response("done", tool_calls=None)])
+            runner = AgentLoopRunner(
+                model=model,
+                tool_executor=AgentToolExecutor(
+                    workspace_root=workspace,
+                    include_task_board=False,
+                    include_skill_loading=False,
+                    include_background_tasks=False,
+                    include_team_ops=True,
+                ),
+                include_task_board=False,
+                include_skill_loading=False,
+                include_background_tasks=False,
+                include_team_ops=True,
+                max_rounds=2,
+            )
+            worker_executor = AgentToolExecutor(
+                workspace_root=workspace,
+                include_write_edit=True,
+                include_todo=False,
+                include_task=False,
+                include_task_board=False,
+                include_skill_loading=False,
+                include_background_tasks=False,
+                include_team_ops=False,
+            )
+
+            blocked_write = runner._execute_teammate_tool(
+                worker_executor=worker_executor,
+                teammate="alice",
+                role="reviewer",
+                tool_name="write_file",
+                args={"path": "x.txt", "content": "hello"},
+            )
+            self.assertIn("read-only", blocked_write)
+
+            blocked_bash = runner._execute_teammate_tool(
+                worker_executor=worker_executor,
+                teammate="alice",
+                role="reviewer",
+                tool_name="bash",
+                args={"command": "echo hi > out.txt"},
+            )
+            self.assertIn("read-only", blocked_bash)
+
+            allowed_bash = runner._execute_teammate_tool(
+                worker_executor=worker_executor,
+                teammate="alice",
+                role="reviewer",
+                tool_name="bash",
+                args={"command": "ls"},
+            )
+            self.assertNotIn("Error:", allowed_bash)
+
+    def test_teammate_budget_stop_sends_message_to_lead(self):
+        tool_calls = [make_tool_call("call_1", "read_file", '{"path":"missing.txt"}')]
+        responses = [make_response(content="", tool_calls=tool_calls)]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            executor = AgentToolExecutor(
+                workspace_root=workspace,
+                include_task_board=False,
+                include_skill_loading=False,
+                include_background_tasks=False,
+                include_team_ops=True,
+            )
+            runner = AgentLoopRunner(
+                model=FakeModel(responses),
+                tool_executor=executor,
+                include_task_board=False,
+                include_skill_loading=False,
+                include_background_tasks=False,
+                include_team_ops=True,
+                teammate_max_rounds=1,
+                teammate_max_tool_calls=5,
+                teammate_max_runtime_sec=60,
+            )
+
+            runner._run_teammate_worker(name="alice", role="coder", prompt="inspect workspace")
+
+            inbox_messages = executor.team_manager.read_inbox("lead")
+            self.assertTrue(inbox_messages)
+            combined = "\n".join(str(item.get("content", "")) for item in inbox_messages)
+            self.assertIn("auto-stop", combined)
+            self.assertIn("round budget exceeded", combined)
+
+    def test_teammate_budget_reason_checks_runtime_and_limits(self):
+        model = FakeModel([make_response("done", tool_calls=None)])
+        runner = AgentLoopRunner(
+            model=model,
+            tool_executor=AgentToolExecutor(include_team_ops=False),
+            include_team_ops=False,
+            teammate_max_rounds=2,
+            teammate_max_tool_calls=3,
+            teammate_max_runtime_sec=10,
+        )
+
+        runtime_reason = runner._teammate_budget_reason(
+            started_at=time.monotonic() - 11,
+            total_rounds=0,
+            total_tool_calls=0,
+        )
+        self.assertIn("runtime exceeded", runtime_reason)
+
+        round_reason = runner._teammate_budget_reason(
+            started_at=time.monotonic(),
+            total_rounds=2,
+            total_tool_calls=0,
+        )
+        self.assertIn("round budget exceeded", round_reason)
+
+        call_reason = runner._teammate_budget_reason(
+            started_at=time.monotonic(),
+            total_rounds=1,
+            total_tool_calls=3,
+        )
+        self.assertIn("tool-call budget exceeded", call_reason)
+
+    def test_supports_anthropic_content_response_shape(self):
+        responses = [
+            {"content": [{"type": "text", "text": "hello from anthropic"}]},
+        ]
+        model = FakeModel(responses)
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=2)
+
+        result = runner.run(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "hello"},
+            ]
+        )
+
+        self.assertEqual(result.final_text, "hello from anthropic")
+        self.assertEqual(result.rounds, 1)
+
+    def test_supports_anthropic_tool_use_blocks(self):
+        responses = [
+            {
+                "content": [
+                    {"type": "tool_use", "id": "tool_1", "name": "read_file", "input": {"path": "missing.txt"}}
+                ]
+            },
+            {"content": [{"type": "text", "text": "done"}]},
+        ]
+        model = FakeModel(responses)
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=3)
+
+        result = runner.run(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "check file"},
+            ]
+        )
+
+        self.assertEqual(result.final_text, "done")
+        self.assertTrue(any(event.startswith("read_file ->") for event in result.tool_events))
 
 
 if __name__ == "__main__":

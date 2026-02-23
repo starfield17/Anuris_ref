@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .ui import ChatUI
@@ -21,6 +21,7 @@ class _RenderState:
     is_first_content: bool = True
     in_think_tag: bool = False
     buffered_content: str = ""
+    reasoning_detail_buffers: dict[int, str] = field(default_factory=dict)
 
 
 class StreamRenderer:
@@ -34,14 +35,17 @@ class StreamRenderer:
 
         try:
             for chunk in response_stream:
-                delta = chunk.choices[0].delta
-
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    self._enter_reasoning_mode(state)
-                    self._append_reasoning_text(delta.reasoning_content, state)
-
-                if hasattr(delta, "content") and delta.content:
-                    self._process_content_delta(delta.content, state)
+                delta = self._extract_openai_delta(chunk)
+                if delta is not None:
+                    if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                        self._enter_reasoning_mode(state)
+                        self._append_reasoning_text(delta.reasoning_content, state)
+                    if hasattr(delta, "reasoning_details") and delta.reasoning_details:
+                        self._process_reasoning_details(delta.reasoning_details, state)
+                    if hasattr(delta, "content") and delta.content:
+                        self._process_content_delta(delta.content, state)
+                else:
+                    self._process_anthropic_chunk(chunk, state)
 
             self._flush_buffered_content(state)
 
@@ -144,3 +148,106 @@ class StreamRenderer:
 
         state.full_response += content
         self.ui.display_message(content, end="", flush=True)
+
+    def _extract_openai_delta(self, chunk: Any) -> Any:
+        choices = getattr(chunk, "choices", None)
+        if choices:
+            first = choices[0]
+            return getattr(first, "delta", None)
+        if isinstance(chunk, dict):
+            choices = chunk.get("choices")
+            if isinstance(choices, list) and choices:
+                delta = choices[0].get("delta")
+                if isinstance(delta, dict):
+                    return type("OpenAIDelta", (), delta)()
+        return None
+
+    def _process_anthropic_chunk(self, chunk: Any, state: _RenderState) -> None:
+        payload = self._to_mapping(chunk)
+        if not payload:
+            return
+
+        event_type = str(payload.get("type", ""))
+        if event_type == "content_block_start":
+            content_block = payload.get("content_block", {})
+            self._process_anthropic_content_block(content_block, state)
+            return
+        if event_type == "content_block_delta":
+            delta = payload.get("delta", {})
+            self._process_anthropic_delta(delta, state)
+            return
+        if event_type == "message_start":
+            message = payload.get("message", {})
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    self._process_anthropic_content_block(block, state)
+            return
+
+        # Best effort: some wrappers emit direct Anthropic-like `delta` without event type.
+        if "delta" in payload:
+            self._process_anthropic_delta(payload.get("delta", {}), state)
+
+    def _process_anthropic_content_block(self, block: Any, state: _RenderState) -> None:
+        data = self._to_mapping(block)
+        if not data:
+            return
+        block_type = str(data.get("type", ""))
+        if block_type == "text":
+            text = str(data.get("text", "") or "")
+            if text:
+                self._process_content_delta(text, state)
+        elif block_type in {"thinking", "redacted_thinking"}:
+            thinking = str(data.get("thinking", "") or data.get("text", "") or "")
+            if thinking:
+                self._enter_reasoning_mode(state)
+                self._append_reasoning_text(thinking, state)
+
+    def _process_anthropic_delta(self, delta: Any, state: _RenderState) -> None:
+        data = self._to_mapping(delta)
+        if not data:
+            return
+        delta_type = str(data.get("type", ""))
+        if delta_type == "text_delta":
+            text = str(data.get("text", "") or "")
+            if text:
+                self._process_content_delta(text, state)
+        elif delta_type in {"thinking_delta", "signature_delta"}:
+            thinking = str(data.get("thinking", "") or data.get("text", "") or "")
+            if thinking:
+                self._enter_reasoning_mode(state)
+                self._append_reasoning_text(thinking, state)
+
+    @staticmethod
+    def _to_mapping(value: Any) -> dict:
+        if isinstance(value, dict):
+            return value
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            dumped = model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        if hasattr(value, "__dict__"):
+            return dict(value.__dict__)
+        return {}
+
+    def _process_reasoning_details(self, details: Any, state: _RenderState) -> None:
+        for index, detail in enumerate(details):
+            text = ""
+            if isinstance(detail, dict):
+                text = str(detail.get("text", "") or "")
+            else:
+                text = str(getattr(detail, "text", "") or "")
+            if not text:
+                continue
+
+            previous = state.reasoning_detail_buffers.get(index, "")
+            if text.startswith(previous):
+                delta_text = text[len(previous) :]
+            else:
+                delta_text = text
+            state.reasoning_detail_buffers[index] = text
+
+            if delta_text:
+                self._enter_reasoning_mode(state)
+                self._append_reasoning_text(delta_text, state)

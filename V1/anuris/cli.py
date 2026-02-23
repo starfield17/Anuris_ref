@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from .bootstrap import (
     build_arg_parser,
     ensure_required_config,
@@ -23,5 +25,6 @@ def main() -> None:
     config = ensure_required_config(config, config_manager)
 
     ui = ChatUI()
-    chat_app = ChatStateMachine(config, ui)
+    app_workspace = Path(__file__).resolve().parent.parent
+    chat_app = ChatStateMachine(config, ui, workspace_root=app_workspace)
     chat_app.run()

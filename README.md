@@ -70,6 +70,10 @@ Agent mode is enabled by default at startup. Use `/agent off` to switch back to 
 * `/skills` – Show discovered skills (`.anuris_skills/`, `skills/`)
 * `/compact [focus]` – Compact long chat history into summary context (`.anuris_transcripts/`)
 * `/background [task_id]` or `/bg [task_id]` – Inspect background tasks in agent mode
+* `/team` – Show teammate roster and statuses (`.anuris_team/config.json`)
+* `/inbox [name]` – Read and drain lead or teammate inbox (`.anuris_team/inbox/`)
+* `/plans` – Show tracked plan approval requests
+* `/shutdowns` – Show tracked shutdown requests
 
 ### Keyboard Shortcuts
 

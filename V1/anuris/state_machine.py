@@ -1,4 +1,6 @@
 from enum import Enum, auto
+from pathlib import Path
+from typing import Optional
 
 from rich.prompt import Prompt
 
@@ -27,9 +29,10 @@ class ChatState(Enum):
 class ChatStateMachine:
     """Main application using state machine pattern."""
 
-    def __init__(self, config: Config, ui: ChatUI):
+    def __init__(self, config: Config, ui: ChatUI, workspace_root: Optional[Path] = None):
         self.config = config
         self.ui = ui
+        self.workspace_root = (workspace_root or Path.cwd()).resolve()
         resolved_system_prompt = prompt_manager.resolve_prompt_source(config.system_prompt)
         self.history = ChatHistory(system_prompt=resolved_system_prompt)
         self.model = ChatModel(config)
@@ -37,6 +40,7 @@ class ChatStateMachine:
         self.agent_mode = True
         self.agent_runner = AgentLoopRunner(
             self.model,
+            workspace_root=self.workspace_root,
             require_reasoning_content=self._provider_requires_reasoning_content(),
         )
         self.command_dispatcher = CommandDispatcher(
@@ -51,6 +55,10 @@ class ChatStateMachine:
                 "compact": self._handle_compact_command,
                 "background": self._handle_background_command,
                 "bg": self._handle_background_command,
+                "team": self._handle_team_command,
+                "inbox": self._handle_inbox_command,
+                "plans": self._handle_plans_command,
+                "shutdowns": self._handle_shutdowns_command,
             },
         )
         self.stream_renderer = StreamRenderer(self.ui)
@@ -262,9 +270,28 @@ class ChatStateMachine:
         task_id = args.strip() if args and args.strip() else None
         self.ui.display_message(self.agent_runner.get_background_snapshot(task_id), style="cyan")
 
+    def _handle_team_command(self, args: str) -> None:
+        """Display teammate roster and statuses."""
+        self.ui.display_message(self.agent_runner.get_team_snapshot(), style="cyan")
+
+    def _handle_inbox_command(self, args: str) -> None:
+        """Display and drain inbox for lead or the named teammate."""
+        target = args.strip() if args and args.strip() else None
+        self.ui.display_message(self.agent_runner.get_inbox_snapshot(target), style="cyan")
+
+    def _handle_plans_command(self, args: str) -> None:
+        """Display pending and completed plan approval requests."""
+        self.ui.display_message(self.agent_runner.get_plan_snapshot(), style="cyan")
+
+    def _handle_shutdowns_command(self, args: str) -> None:
+        """Display tracked teammate shutdown requests."""
+        self.ui.display_message(self.agent_runner.get_shutdown_snapshot(), style="cyan")
+
     def _provider_requires_reasoning_content(self) -> bool:
         base_url = (self.config.base_url or "").lower()
         model_name = (self.config.model or "").lower()
+        if "openrouter" in base_url or "openai.com" in base_url:
+            return False
         return "deepseek" in base_url or "deepseek" in model_name
 
     def _handle_error_state(self) -> ChatState:

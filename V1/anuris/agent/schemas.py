@@ -202,6 +202,24 @@ def _task_list_schema() -> Dict[str, Any]:
     }
 
 
+def _claim_task_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "claim_task",
+            "description": "Claim a persistent task for an owner and mark it in progress.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "owner": {"type": "string"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    }
+
+
 def _load_skill_schema() -> Dict[str, Any]:
     return {
         "type": "function",
@@ -253,6 +271,166 @@ def _check_background_schema() -> Dict[str, Any]:
     }
 
 
+def _spawn_teammate_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "spawn_teammate",
+            "description": "Spawn a persistent teammate worker.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "role": {"type": "string"},
+                    "prompt": {"type": "string"},
+                },
+                "required": ["name", "prompt"],
+            },
+        },
+    }
+
+
+def _list_teammates_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "list_teammates",
+            "description": "List teammate statuses.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _send_message_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "send_message",
+            "description": "Send a message from lead to one teammate inbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"},
+                    "content": {"type": "string"},
+                    "msg_type": {
+                        "type": "string",
+                        "enum": ["message", "broadcast"],
+                    },
+                },
+                "required": ["to", "content"],
+            },
+        },
+    }
+
+
+def _read_inbox_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "read_inbox",
+            "description": "Read and drain an inbox (defaults to lead inbox).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                },
+            },
+        },
+    }
+
+
+def _broadcast_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "broadcast",
+            "description": "Broadcast a message from lead to all teammates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string"},
+                },
+                "required": ["content"],
+            },
+        },
+    }
+
+
+def _shutdown_request_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "shutdown_request",
+            "description": "Ask one teammate to shutdown gracefully.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "teammate": {"type": "string"},
+                },
+                "required": ["teammate"],
+            },
+        },
+    }
+
+
+def _shutdown_status_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "shutdown_status",
+            "description": "Check a shutdown request by request_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string"},
+                },
+                "required": ["request_id"],
+            },
+        },
+    }
+
+
+def _shutdown_list_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "shutdown_list",
+            "description": "List all shutdown request statuses.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _plan_review_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "plan_review",
+            "description": "Approve or reject a teammate plan request.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "approve": {"type": "boolean"},
+                    "feedback": {"type": "string"},
+                },
+                "required": ["request_id", "approve"],
+            },
+        },
+    }
+
+
+def _plan_list_schema() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "plan_list",
+            "description": "List tracked teammate plan requests.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
 def build_tool_schemas(
     include_write_edit: bool = True,
     include_todo: bool = True,
@@ -260,6 +438,7 @@ def build_tool_schemas(
     include_task_board: bool = True,
     include_skill_loading: bool = True,
     include_background_tasks: bool = True,
+    include_team_ops: bool = False,
 ) -> List[Dict[str, Any]]:
     """Build tool schema list by feature flags."""
     schemas = [_bash_schema(), _read_schema()]
@@ -276,12 +455,28 @@ def build_tool_schemas(
                 _task_get_schema(),
                 _task_update_schema(),
                 _task_list_schema(),
+                _claim_task_schema(),
             ]
         )
     if include_skill_loading:
         schemas.append(_load_skill_schema())
     if include_background_tasks:
         schemas.extend([_background_run_schema(), _check_background_schema()])
+    if include_team_ops:
+        schemas.extend(
+            [
+                _spawn_teammate_schema(),
+                _list_teammates_schema(),
+                _send_message_schema(),
+                _read_inbox_schema(),
+                _broadcast_schema(),
+                _shutdown_request_schema(),
+                _shutdown_status_schema(),
+                _shutdown_list_schema(),
+                _plan_review_schema(),
+                _plan_list_schema(),
+            ]
+        )
     return schemas
 
 

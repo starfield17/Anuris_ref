@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -11,26 +12,30 @@ class PersistentTaskManager:
     def __init__(self, tasks_dir: Path):
         self.tasks_dir = tasks_dir.resolve()
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def create(self, subject: str, description: str = "") -> str:
         subject = subject.strip()
         if not subject:
             raise ValueError("subject is required")
 
-        task = {
-            "id": self._next_id(),
-            "subject": subject,
-            "description": description.strip(),
-            "status": "pending",
-            "owner": "",
-            "blockedBy": [],
-            "blocks": [],
-        }
-        self._save(task)
+        with self._lock:
+            task = {
+                "id": self._next_id(),
+                "subject": subject,
+                "description": description.strip(),
+                "status": "pending",
+                "owner": "",
+                "blockedBy": [],
+                "blocks": [],
+            }
+            self._save(task)
         return json.dumps(task, indent=2)
 
     def get(self, task_id: int) -> str:
-        return json.dumps(self._load(task_id), indent=2)
+        with self._lock:
+            task = self._load(task_id)
+        return json.dumps(task, indent=2)
 
     def update(
         self,
@@ -40,37 +45,38 @@ class PersistentTaskManager:
         add_blocks: Optional[List[int]] = None,
         owner: Optional[str] = None,
     ) -> str:
-        task = self._load(task_id)
+        with self._lock:
+            task = self._load(task_id)
 
-        if status:
-            normalized = status.strip().lower()
-            if normalized == "deleted":
-                self._task_path(task_id).unlink(missing_ok=True)
-                return f"Task {task_id} deleted"
-            if normalized not in self.VALID_STATUSES:
-                raise ValueError(f"Invalid status: {status}")
-            task["status"] = normalized
-            if normalized == "completed":
-                self._clear_dependency(task_id)
+            if status:
+                normalized = status.strip().lower()
+                if normalized == "deleted":
+                    self._task_path(task_id).unlink(missing_ok=True)
+                    return f"Task {task_id} deleted"
+                if normalized not in self.VALID_STATUSES:
+                    raise ValueError(f"Invalid status: {status}")
+                task["status"] = normalized
+                if normalized == "completed":
+                    self._clear_dependency(task_id)
 
-        if owner is not None:
-            task["owner"] = owner.strip()
+            if owner is not None:
+                task["owner"] = owner.strip()
 
-        if add_blocked_by:
-            ids = self._normalize_task_ids(add_blocked_by)
-            task["blockedBy"] = sorted(set(task.get("blockedBy", []) + ids))
+            if add_blocked_by:
+                ids = self._normalize_task_ids(add_blocked_by)
+                task["blockedBy"] = sorted(set(task.get("blockedBy", []) + ids))
 
-        if add_blocks:
-            ids = self._normalize_task_ids(add_blocks)
-            task["blocks"] = sorted(set(task.get("blocks", []) + ids))
-            for blocked_id in ids:
-                self._add_blocked_by(blocked_id, task_id)
+            if add_blocks:
+                ids = self._normalize_task_ids(add_blocks)
+                task["blocks"] = sorted(set(task.get("blocks", []) + ids))
+                for blocked_id in ids:
+                    self._add_blocked_by(blocked_id, task_id)
 
-        self._save(task)
+            self._save(task)
         return json.dumps(task, indent=2)
 
     def list_all(self) -> str:
-        tasks = [json.loads(path.read_text()) for path in self._task_paths()]
+        tasks = self.list_records()
         if not tasks:
             return "No tasks."
 
@@ -85,6 +91,34 @@ class PersistentTaskManager:
             blocked = f" (blocked by: {task['blockedBy']})" if task.get("blockedBy") else ""
             lines.append(f"{marker} #{task['id']}: {task.get('subject', '')}{owner}{blocked}")
         return "\n".join(lines)
+
+    def list_records(self) -> List[dict]:
+        with self._lock:
+            return [json.loads(path.read_text()) for path in self._task_paths()]
+
+    def claim_task(self, task_id: int, owner: str) -> str:
+        with self._lock:
+            task = self._load(task_id)
+            task["owner"] = owner.strip()
+            task["status"] = "in_progress"
+            self._save(task)
+        return json.dumps(task, indent=2)
+
+    def claim_next_unblocked(self, owner: str) -> Optional[dict]:
+        with self._lock:
+            for path in self._task_paths():
+                task = json.loads(path.read_text())
+                if task.get("status") != "pending":
+                    continue
+                if task.get("owner"):
+                    continue
+                if task.get("blockedBy"):
+                    continue
+                task["owner"] = owner.strip()
+                task["status"] = "in_progress"
+                self._save(task)
+                return task
+        return None
 
     def _task_paths(self) -> List[Path]:
         paths = []

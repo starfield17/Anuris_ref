@@ -8,6 +8,7 @@ Developer handoff and implementation notes for `Anuris_ref`.
 - Main entrypoint remains `V1/Anuris_rebuild.py` (thin wrapper).
 - Core package is `V1/anuris/`.
 - Runtime architecture overview is in `V1/ARCHITECTURE.md`.
+- Agent workspace root is anchored to `V1/` (resolved from `anuris/cli.py`), not the shell CWD.
 
 ## 2) Quick Start (Local Development)
 
@@ -63,6 +64,10 @@ From interactive CLI:
 - `/skills` (renders discovered local skills for `load_skill`)
 - `/compact [focus]` (manually compacts conversation context for long sessions)
 - `/background [task_id]` (shows background task status; alias: `/bg`)
+- `/team` (renders teammate roster and status summary)
+- `/inbox [name]` (drains inbox for lead or a specific teammate)
+- `/plans` (shows tracked plan approval requests)
+- `/shutdowns` (shows tracked shutdown request status)
 
 ## 5) Reasoning Switch (Provider-aware)
 
@@ -108,6 +113,18 @@ Implemented:
 - s07: persistent task system (`task_create/task_get/task_update/task_list`)
   - task data is stored under `.anuris_tasks/` in the workspace
   - supports status transitions and dependency updates
+- s09: team collaboration foundations
+  - tools: `spawn_teammate`, `list_teammates`, `send_message`, `read_inbox`, `broadcast`
+  - file-backed roster and inbox store under `.anuris_team/`
+  - CLI inspection via `/team` and `/inbox [name]`
+- s10: protocol governance for teammates
+  - tools: `shutdown_request`, `shutdown_status`, `shutdown_list`
+  - tools: `plan_review`, `plan_list` (teammates submit plan requests)
+  - request tracking with request_id-based state under team manager
+- s11: autonomous teammate behavior (initial integration)
+  - teammate worker supports `idle` state and inbox polling
+  - task auto-claim from `.anuris_tasks/` when unblocked tasks exist
+  - identity re-injection for very short/compacted worker contexts
 
 ## 7) Key Files for Ongoing Work
 
@@ -125,6 +142,7 @@ Agent internals:
 - `V1/anuris/agent/skills.py`
 - `V1/anuris/agent/compact.py`
 - `V1/anuris/agent/background.py`
+- `V1/anuris/agent/team.py`
 - `V1/anuris/agent/todo.py`
 - `V1/anuris/agent/tools.py` (compatibility facade)
 - `V1/anuris/agent/tasks.py`
@@ -171,9 +189,9 @@ python -m py_compile anuris/agent/loop.py anuris/state_machine.py tests/test_age
 
 ## 10) Suggested Next Steps
 
-- Improve progress UX (single-line spinner, throttled tool logs, optional verbose mode).
-- Expand subagent policy (explicit read-only explore mode and stricter tool budgets).
-- Add higher-level integration smoke tests for `/agent` command flow.
+- Harden team-mode safety policy (tool budgets, timeout ceilings, command policy by role).
+- Add integration smoke tests for teammate lifecycle (`spawn -> message -> idle -> auto-claim -> shutdown`).
+- Improve UX for team telemetry (single-line status for active teammates and pending plan/shutdown requests).
 
 ## 11) Daily Handoff Checklist
 

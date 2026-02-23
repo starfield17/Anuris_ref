@@ -3,6 +3,7 @@ from .compact import ContextCompactor
 from .loop import AgentLoopRunner, AgentRunResult
 from .skills import SkillLoader
 from .tasks import PersistentTaskManager
+from .team import TeamManager
 from .tools import TOOL_SCHEMAS, AgentToolExecutor, TodoManager, build_tool_schemas
 
 __all__ = [
@@ -12,6 +13,7 @@ __all__ = [
     "BackgroundManager",
     "ContextCompactor",
     "SkillLoader",
+    "TeamManager",
     "PersistentTaskManager",
     "TodoManager",
     "build_tool_schemas",

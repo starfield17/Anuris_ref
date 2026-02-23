@@ -25,6 +25,55 @@ class FakeBackgroundManager:
         return items
 
 
+class FakeTeamManager:
+    def __init__(self):
+        self.runner = None
+        self.calls = []
+
+    def set_worker_runner(self, runner):
+        self.runner = runner
+
+    def spawn(self, name, role, prompt):
+        self.calls.append(("spawn", name, role, prompt))
+        return f"spawn:{name}:{role}"
+
+    def list_members(self):
+        self.calls.append(("list_members",))
+        return "Team: default\n- alice (coder): idle"
+
+    def send_from_lead(self, to, content, msg_type="message"):
+        self.calls.append(("send", to, content, msg_type))
+        return f"sent:{to}:{msg_type}"
+
+    def read_inbox_text(self, name):
+        self.calls.append(("read_inbox", name))
+        return f"inbox:{name}"
+
+    def broadcast_from_lead(self, content):
+        self.calls.append(("broadcast", content))
+        return "Broadcast to 1 teammate(s)"
+
+    def request_shutdown(self, teammate):
+        self.calls.append(("shutdown_request", teammate))
+        return "Shutdown request req123 sent to alice"
+
+    def check_shutdown(self, request_id):
+        self.calls.append(("shutdown_status", request_id))
+        return '{"status": "pending"}'
+
+    def list_shutdown_requests(self):
+        self.calls.append(("shutdown_list",))
+        return "- req123: alice [pending]"
+
+    def review_plan(self, request_id, approve, feedback=""):
+        self.calls.append(("plan_review", request_id, approve, feedback))
+        return "Plan req123 marked as approved"
+
+    def list_plan_requests(self):
+        self.calls.append(("plan_list",))
+        return "- req123: from=alice [pending]"
+
+
 class AgentToolsTests(unittest.TestCase):
     def test_todo_manager_update_and_render(self):
         manager = TodoManager()
@@ -73,7 +122,7 @@ class AgentToolsTests(unittest.TestCase):
         names = [schema["function"]["name"] for schema in schemas]
         self.assertEqual(
             names,
-            ["bash", "read_file", "task_create", "task_get", "task_update", "task_list"],
+            ["bash", "read_file", "task_create", "task_get", "task_update", "task_list", "claim_task"],
         )
 
     def test_build_tool_schemas_includes_load_skill(self):
@@ -99,6 +148,35 @@ class AgentToolsTests(unittest.TestCase):
         )
         names = [schema["function"]["name"] for schema in schemas]
         self.assertEqual(names, ["bash", "read_file", "background_run", "check_background"])
+
+    def test_build_tool_schemas_includes_team_tools(self):
+        schemas = build_tool_schemas(
+            include_write_edit=False,
+            include_todo=False,
+            include_task=False,
+            include_task_board=False,
+            include_skill_loading=False,
+            include_background_tasks=False,
+            include_team_ops=True,
+        )
+        names = [schema["function"]["name"] for schema in schemas]
+        self.assertEqual(
+            names,
+            [
+                "bash",
+                "read_file",
+                "spawn_teammate",
+                "list_teammates",
+                "send_message",
+                "read_inbox",
+                "broadcast",
+                "shutdown_request",
+                "shutdown_status",
+                "shutdown_list",
+                "plan_review",
+                "plan_list",
+            ],
+        )
 
     def test_task_tool_uses_subagent_runner(self):
         executor = AgentToolExecutor(
@@ -148,6 +226,47 @@ class AgentToolsTests(unittest.TestCase):
             self.assertIn("Use small commits", loaded)
             self.assertIn("- git: Git workflow helpers", executor.get_skill_snapshot())
 
+    def test_load_skill_resolves_path_like_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            skills_dir = workspace / ".anuris_skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            (skills_dir / "nb-source-switch.md").write_text(
+                "---\n"
+                "description: switch package mirrors\n"
+                "tags: source-switch,pip,conda\n"
+                "---\n"
+                "Use non-interactive wrappers for mirror switching.",
+                encoding="utf-8",
+            )
+
+            executor = AgentToolExecutor(workspace_root=workspace, include_skill_loading=True)
+            loaded = executor.execute("load_skill", {"name": "bash/switch_source.md"})
+            self.assertIn('<skill name="nb-source-switch">', loaded)
+            self.assertIn("non-interactive wrappers", loaded)
+
+            short_loaded = executor.execute("load_skill", {"name": "source_switch"})
+            self.assertIn('<skill name="nb-source-switch">', short_loaded)
+
+    def test_load_skill_unknown_name_includes_suggestion(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            skills_dir = workspace / ".anuris_skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            (skills_dir / "nb-source-switch.md").write_text(
+                "---\n"
+                "description: switch package mirrors\n"
+                "tags: source-switch,pip,conda\n"
+                "---\n"
+                "Use mirror helpers.",
+                encoding="utf-8",
+            )
+
+            executor = AgentToolExecutor(workspace_root=workspace, include_skill_loading=True)
+            error = executor.execute("load_skill", {"name": "sorce-swtch"})
+            self.assertIn("Did you mean:", error)
+            self.assertIn("nb-source-switch", error)
+
     def test_background_run_and_check_use_background_manager(self):
         fake_bg = FakeBackgroundManager()
         executor = AgentToolExecutor(
@@ -161,6 +280,43 @@ class AgentToolsTests(unittest.TestCase):
         check = executor.execute("check_background", {"task_id": "fake123"})
         self.assertEqual(check, "check:fake123")
         self.assertEqual(executor.get_background_snapshot(), "check:all")
+
+    def test_team_tools_use_team_manager(self):
+        team = FakeTeamManager()
+        executor = AgentToolExecutor(
+            include_team_ops=True,
+            include_task_board=False,
+            include_skill_loading=False,
+            include_background_tasks=False,
+            team_manager=team,
+        )
+
+        self.assertEqual(
+            executor.execute("spawn_teammate", {"name": "alice", "role": "coder", "prompt": "fix tests"}),
+            "spawn:alice:coder",
+        )
+        self.assertIn("alice", executor.execute("list_teammates", {}))
+        self.assertEqual(
+            executor.execute("send_message", {"to": "alice", "content": "hello", "msg_type": "message"}),
+            "sent:alice:message",
+        )
+        self.assertEqual(executor.execute("read_inbox", {}), "inbox:lead")
+        self.assertIn("Broadcast", executor.execute("broadcast", {"content": "status update"}))
+        self.assertIn("Shutdown request", executor.execute("shutdown_request", {"teammate": "alice"}))
+        self.assertIn("pending", executor.execute("shutdown_status", {"request_id": "req123"}))
+        self.assertIn("pending", executor.execute("shutdown_list", {}))
+        self.assertIn(
+            "approved",
+            executor.execute(
+                "plan_review",
+                {"request_id": "req123", "approve": True, "feedback": "ok"},
+            ),
+        )
+        self.assertIn("pending", executor.execute("plan_list", {}))
+        self.assertIn("alice", executor.get_team_snapshot())
+        self.assertEqual(executor.get_inbox_snapshot("lead"), "inbox:lead")
+        self.assertIn("pending", executor.get_plan_snapshot())
+        self.assertIn("pending", executor.get_shutdown_snapshot())
 
 
 if __name__ == "__main__":

@@ -74,6 +74,22 @@ HELP_TEXT = """[bold cyan]Anuris_API_CLI Help[/bold cyan]
     Usage: /background [task_id]
     Alias: /bg [task_id]
 
+[green]/team[/green]
+    Show teammate roster and statuses
+    Usage: /team
+
+[green]/inbox [name][/green]
+    Read and drain inbox for lead or a named teammate
+    Usage: /inbox [name]
+
+[green]/plans[/green]
+    Show tracked teammate plan approval requests
+    Usage: /plans
+
+[green]/shutdowns[/green]
+    Show tracked teammate shutdown requests
+    Usage: /shutdowns
+
 [bold yellow]Keyboard Shortcuts:[/bold yellow]
 [blue]Enter[/blue]        Start a new line in your message
 [blue]Ctrl+D[/blue]       Send your message

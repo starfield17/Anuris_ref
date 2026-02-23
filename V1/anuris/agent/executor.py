@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .background import BackgroundManager
 from .skills import SkillLoader
 from .tasks import PersistentTaskManager
+from .team import TeamManager
 from .todo import TodoManager
 
 
@@ -20,11 +21,14 @@ class AgentToolExecutor:
         include_task_board: bool = True,
         include_skill_loading: bool = True,
         include_background_tasks: bool = True,
+        include_team_ops: bool = False,
         subagent_runner: Optional[Callable[[str, str], str]] = None,
+        teammate_runner: Optional[Callable[[str, str, str], None]] = None,
         todo_manager: Optional[TodoManager] = None,
         task_manager: Optional[PersistentTaskManager] = None,
         skill_loader: Optional[SkillLoader] = None,
         background_manager: Optional[BackgroundManager] = None,
+        team_manager: Optional[TeamManager] = None,
     ):
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
         self.todo_manager = todo_manager if include_todo else None
@@ -32,12 +36,17 @@ class AgentToolExecutor:
         self.task_manager = task_manager if include_task_board else None
         self.skill_loader = skill_loader if include_skill_loading else None
         self.background_manager = background_manager if include_background_tasks else None
+        self.team_manager = team_manager if include_team_ops else None
         if include_task_board and self.task_manager is None:
             self.task_manager = PersistentTaskManager(self.workspace_root / ".anuris_tasks")
         if include_skill_loading and self.skill_loader is None:
             self.skill_loader = SkillLoader(self.workspace_root)
         if include_background_tasks and self.background_manager is None:
             self.background_manager = BackgroundManager(self.workspace_root)
+        if include_team_ops and self.team_manager is None:
+            self.team_manager = TeamManager(self.workspace_root)
+        if include_team_ops and self.team_manager and teammate_runner is not None:
+            self.team_manager.set_worker_runner(teammate_runner)
 
         self.handlers: Dict[str, Callable[..., str]] = {
             "bash": lambda **kw: self.run_bash(kw["command"]),
@@ -77,10 +86,48 @@ class AgentToolExecutor:
                 int(kw.get("timeout", 300)),
             )
             self.handlers["check_background"] = lambda **kw: self.run_check_background(kw.get("task_id"))
+        if include_team_ops:
+            self.handlers.update(
+                {
+                    "spawn_teammate": lambda **kw: self.run_spawn_teammate(
+                        kw["name"],
+                        kw.get("role", "teammate"),
+                        kw["prompt"],
+                    ),
+                    "list_teammates": lambda **kw: self.run_list_teammates(),
+                    "send_message": lambda **kw: self.run_send_message(
+                        kw["to"],
+                        kw["content"],
+                        kw.get("msg_type", "message"),
+                    ),
+                    "read_inbox": lambda **kw: self.run_read_inbox(kw.get("name")),
+                    "broadcast": lambda **kw: self.run_broadcast(kw["content"]),
+                    "shutdown_request": lambda **kw: self.run_shutdown_request(kw["teammate"]),
+                    "shutdown_status": lambda **kw: self.run_shutdown_status(kw["request_id"]),
+                    "shutdown_list": lambda **kw: self.run_shutdown_list(),
+                    "plan_review": lambda **kw: self.run_plan_review(
+                        kw["request_id"],
+                        bool(kw["approve"]),
+                        kw.get("feedback", ""),
+                    ),
+                    "plan_list": lambda **kw: self.run_plan_list(),
+                }
+            )
+        if include_task_board:
+            self.handlers["claim_task"] = lambda **kw: self.run_claim_task(
+                kw["task_id"],
+                kw.get("owner", "lead"),
+            )
 
     def set_subagent_runner(self, runner: Callable[[str, str], str]) -> None:
         """Attach a subagent callback for the task tool."""
         self.subagent_runner = runner
+
+    def set_teammate_runner(self, runner: Callable[[str, str, str], None]) -> None:
+        """Attach teammate worker callback for team operations."""
+        if not self.team_manager:
+            return
+        self.team_manager.set_worker_runner(runner)
 
     def execute(self, tool_name: str, args: Dict[str, Any]) -> str:
         handler = self.handlers.get(tool_name)
@@ -178,6 +225,11 @@ class AgentToolExecutor:
             return "Error: Task manager unavailable"
         return self.task_manager.list_all()
 
+    def run_claim_task(self, task_id: int, owner: str = "lead") -> str:
+        if not self.task_manager:
+            return "Error: Task manager unavailable"
+        return self.task_manager.claim_task(task_id, owner)
+
     def run_load_skill(self, name: str) -> str:
         if not self.skill_loader:
             return "Error: Skill loader unavailable"
@@ -192,6 +244,57 @@ class AgentToolExecutor:
         if not self.background_manager:
             return "Error: Background manager unavailable"
         return self.background_manager.check(task_id)
+
+    def run_spawn_teammate(self, name: str, role: str, prompt: str) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.spawn(name, role, prompt)
+
+    def run_list_teammates(self) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.list_members()
+
+    def run_send_message(self, to: str, content: str, msg_type: str = "message") -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.send_from_lead(to, content, msg_type)
+
+    def run_read_inbox(self, name: Optional[str] = None) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        target = name.strip() if name else "lead"
+        return self.team_manager.read_inbox_text(target)
+
+    def run_broadcast(self, content: str) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.broadcast_from_lead(content)
+
+    def run_shutdown_request(self, teammate: str) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.request_shutdown(teammate)
+
+    def run_shutdown_status(self, request_id: str) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.check_shutdown(request_id)
+
+    def run_shutdown_list(self) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.list_shutdown_requests()
+
+    def run_plan_review(self, request_id: str, approve: bool, feedback: str = "") -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.review_plan(request_id, approve, feedback)
+
+    def run_plan_list(self) -> str:
+        if not self.team_manager:
+            return "Error: Team manager unavailable"
+        return self.team_manager.list_plan_requests()
 
     def drain_background_notifications(self) -> List[Dict[str, str]]:
         if not self.background_manager:
@@ -222,3 +325,24 @@ class AgentToolExecutor:
         if not self.background_manager:
             return "Background manager unavailable"
         return self.background_manager.check(task_id)
+
+    def get_team_snapshot(self) -> str:
+        if not self.team_manager:
+            return "Team manager unavailable"
+        return self.team_manager.list_members()
+
+    def get_inbox_snapshot(self, name: Optional[str] = None) -> str:
+        if not self.team_manager:
+            return "Team manager unavailable"
+        target = name.strip() if name else "lead"
+        return self.team_manager.read_inbox_text(target)
+
+    def get_plan_snapshot(self) -> str:
+        if not self.team_manager:
+            return "Team manager unavailable"
+        return self.team_manager.list_plan_requests()
+
+    def get_shutdown_snapshot(self) -> str:
+        if not self.team_manager:
+            return "Team manager unavailable"
+        return self.team_manager.list_shutdown_requests()
