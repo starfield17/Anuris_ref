@@ -1,6 +1,6 @@
 import glob
 import os
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
 from rich.panel import Panel
 
@@ -49,6 +49,10 @@ HELP_TEXT = """[bold cyan]Anuris_API_CLI Help[/bold cyan]
     Display this help message
     Usage: /help
 
+[green]/agent [on|off|status][/green]
+    Toggle or inspect agent mode
+    Usage: /agent [on|off|status]
+
 [bold yellow]Keyboard Shortcuts:[/bold yellow]
 [blue]Enter[/blue]        Start a new line in your message
 [blue]Ctrl+D[/blue]       Send your message
@@ -74,7 +78,13 @@ HELP_TEXT = """[bold cyan]Anuris_API_CLI Help[/bold cyan]
 class CommandDispatcher:
     """Dispatches slash commands to handlers."""
 
-    def __init__(self, history: ChatHistory, attachment_manager: AttachmentManager, ui: ChatUI):
+    def __init__(
+        self,
+        history: ChatHistory,
+        attachment_manager: AttachmentManager,
+        ui: ChatUI,
+        extra_handlers: Optional[Dict[str, Callable[[str], None]]] = None,
+    ):
         self.history = history
         self.attachment_manager = attachment_manager
         self.ui = ui
@@ -87,6 +97,8 @@ class CommandDispatcher:
             "detach": self._handle_detach,
             "files": self._handle_files,
         }
+        if extra_handlers:
+            self.handlers.update(extra_handlers)
 
     def execute(self, command_name: str, command_args: str) -> bool:
         """Execute a command by name. Returns False when command is unknown."""

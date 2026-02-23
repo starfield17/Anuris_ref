@@ -152,6 +152,7 @@ class ChatUI:
             [blue]- /attach[/blue]   : Attach file(s)
             [blue]- /detach[/blue]   : Remove attachment(s)
             [blue]- /files[/blue]    : List attachments
+            [blue]- /agent[/blue]    : Toggle agent mode
             [blue]- /help[/blue]     : Show help
 
             [bold magenta]Shortcuts:[/bold magenta]

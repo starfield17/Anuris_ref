@@ -81,6 +81,18 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertTrue(self.dispatcher.execute("help", ""))
         self.assertTrue(any(isinstance(message, Panel) for message in self.ui.messages))
 
+    def test_extra_handler_can_be_registered(self):
+        calls = []
+        dispatcher = CommandDispatcher(
+            self.history,
+            self.attachment_manager,
+            self.ui,
+            extra_handlers={"agent": lambda args: calls.append(args)},
+        )
+
+        self.assertTrue(dispatcher.execute("agent", "on"))
+        self.assertEqual(calls, ["on"])
+
 
 if __name__ == "__main__":
     unittest.main()

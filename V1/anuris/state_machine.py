@@ -2,6 +2,7 @@ from enum import Enum, auto
 
 from rich.prompt import Prompt
 
+from .agent import AgentLoopRunner
 from .attachments import AttachmentManager
 from .commands import CommandDispatcher
 from .config import Config
@@ -33,7 +34,17 @@ class ChatStateMachine:
         self.history = ChatHistory(system_prompt=resolved_system_prompt)
         self.model = ChatModel(config)
         self.attachment_manager = AttachmentManager()
-        self.command_dispatcher = CommandDispatcher(self.history, self.attachment_manager, self.ui)
+        self.agent_mode = False
+        self.agent_runner = AgentLoopRunner(
+            self.model,
+            require_reasoning_content=self._provider_requires_reasoning_content(),
+        )
+        self.command_dispatcher = CommandDispatcher(
+            self.history,
+            self.attachment_manager,
+            self.ui,
+            extra_handlers={"agent": self._handle_agent_command},
+        )
         self.stream_renderer = StreamRenderer(self.ui)
         self.current_state = ChatState.IDLE
 
@@ -113,6 +124,9 @@ class ChatStateMachine:
 
     def _handle_responding_state(self) -> ChatState:
         """Handle API response with attachments."""
+        if self.agent_mode:
+            return self._handle_agent_responding_state()
+
         try:
             messages = self.history.messages + [{"role": "user", "content": self.context["user_input"]}]
             api_attachments = (
@@ -160,6 +174,60 @@ class ChatStateMachine:
         except Exception as exc:
             self.context["error_message"] = str(exc)
             return ChatState.ERROR
+
+    def _handle_agent_responding_state(self) -> ChatState:
+        """Handle one s01+s02 style agent loop response."""
+        try:
+            messages = self.history.messages + [{"role": "user", "content": self.context["user_input"]}]
+            api_attachments = (
+                self.attachment_manager.prepare_for_api() if self.attachment_manager.attachments else None
+            )
+            current_attachments = self.attachment_manager.attachments.copy()
+            self.attachment_manager.clear_attachments()
+
+            result = self.agent_runner.run(messages, api_attachments)
+            for event in result.tool_events:
+                self.ui.display_message(f"[tool] {event}", style="dim")
+
+            if result.final_text:
+                self.ui.display_message("\nAnuris: ", style="bold blue", end="")
+                self.ui.display_message(result.final_text)
+                self.history.add_message(
+                    "user",
+                    self.context["user_input"],
+                    attachments=current_attachments,
+                )
+                self.history.add_message("assistant", result.final_text)
+            else:
+                raise Exception("No content in agent response")
+
+            return ChatState.WAITING_FOR_USER
+
+        except Exception as exc:
+            self.context["error_message"] = str(exc)
+            return ChatState.ERROR
+
+    def _handle_agent_command(self, args: str) -> None:
+        """Toggle agent mode: /agent on|off|status."""
+        action = args.strip().lower() if args else "status"
+        if action in ("status", ""):
+            status = "ON" if self.agent_mode else "OFF"
+            self.ui.display_message(f"Agent mode: {status}", style="cyan")
+            return
+        if action == "on":
+            self.agent_mode = True
+            self.ui.display_message("Agent mode enabled", style="green")
+            return
+        if action == "off":
+            self.agent_mode = False
+            self.ui.display_message("Agent mode disabled", style="yellow")
+            return
+        self.ui.display_message("Usage: /agent [on|off|status]", style="yellow")
+
+    def _provider_requires_reasoning_content(self) -> bool:
+        base_url = (self.config.base_url or "").lower()
+        model_name = (self.config.model or "").lower()
+        return "deepseek" in base_url or "deepseek" in model_name
 
     def _handle_error_state(self) -> ChatState:
         """Handle error state."""
