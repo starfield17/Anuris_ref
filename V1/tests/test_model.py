@@ -1,5 +1,7 @@
+import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from anuris.config import Config
 from anuris.model import ChatModel
@@ -186,6 +188,108 @@ class ChatModelReasoningTests(unittest.TestCase):
                 tool_choice="auto",
             )
         self.assertEqual(len(failing.calls), 1)
+
+
+class ChatModelProxyTests(unittest.TestCase):
+    @patch("anuris.model.OpenAI")
+    @patch("anuris.model.httpx.Client")
+    @patch("anuris.model.SyncProxyTransport.from_url")
+    def test_config_socks_proxy_normalizes_socks_scheme(self, mock_from_url, mock_httpx_client, mock_openai):
+        transport = object()
+        http_client = object()
+        mock_from_url.return_value = transport
+        mock_httpx_client.return_value = http_client
+
+        config = Config(
+            api_key="test",
+            base_url="https://api.example.com/v1",
+            model="demo",
+            proxy="socks://127.0.0.1:8990",
+        )
+
+        ChatModel(config)
+
+        mock_from_url.assert_called_once_with("socks5://127.0.0.1:8990")
+        mock_httpx_client.assert_called_once()
+        _, kwargs = mock_httpx_client.call_args
+        self.assertIs(kwargs.get("transport"), transport)
+        self.assertFalse(kwargs.get("trust_env", True))
+
+        mock_openai.assert_called_once()
+        self.assertIs(mock_openai.call_args.kwargs.get("http_client"), http_client)
+
+    @patch.dict(os.environ, {"ALL_PROXY": "socks://127.0.0.1:8990"}, clear=True)
+    @patch("anuris.model.OpenAI")
+    @patch("anuris.model.httpx.Client")
+    @patch("anuris.model.SyncProxyTransport.from_url")
+    def test_env_socks_proxy_used_when_config_proxy_empty(
+        self, mock_from_url, mock_httpx_client, mock_openai
+    ):
+        transport = object()
+        http_client = object()
+        mock_from_url.return_value = transport
+        mock_httpx_client.return_value = http_client
+
+        config = Config(
+            api_key="test",
+            base_url="https://api.example.com/v1",
+            model="demo",
+            proxy="",
+        )
+
+        ChatModel(config)
+
+        mock_from_url.assert_called_once_with("socks5://127.0.0.1:8990")
+        _, kwargs = mock_httpx_client.call_args
+        self.assertIs(kwargs.get("transport"), transport)
+        self.assertFalse(kwargs.get("trust_env", True))
+        self.assertIs(mock_openai.call_args.kwargs.get("http_client"), http_client)
+
+    @patch.dict(os.environ, {"ALL_PROXY": "socks://127.0.0.1:8990"}, clear=True)
+    @patch("anuris.model.OpenAI")
+    @patch("anuris.model.httpx.Client")
+    @patch("anuris.model.SyncProxyTransport.from_url")
+    def test_config_proxy_overrides_env_proxy(self, mock_from_url, mock_httpx_client, mock_openai):
+        http_client = object()
+        mock_httpx_client.return_value = http_client
+
+        config = Config(
+            api_key="test",
+            base_url="https://api.example.com/v1",
+            model="demo",
+            proxy="http://127.0.0.1:8080",
+        )
+
+        ChatModel(config)
+
+        mock_from_url.assert_not_called()
+        mock_httpx_client.assert_called_once_with(proxy="http://127.0.0.1:8080", trust_env=False)
+        self.assertIs(mock_openai.call_args.kwargs.get("http_client"), http_client)
+
+    @patch.dict(
+        os.environ,
+        {"ALL_PROXY": "socks://127.0.0.1:8990", "NO_PROXY": "api.example.com"},
+        clear=True,
+    )
+    @patch("anuris.model.OpenAI")
+    @patch("anuris.model.httpx.Client")
+    @patch("anuris.model.SyncProxyTransport.from_url")
+    def test_no_proxy_disables_system_proxy(self, mock_from_url, mock_httpx_client, mock_openai):
+        http_client = object()
+        mock_httpx_client.return_value = http_client
+
+        config = Config(
+            api_key="test",
+            base_url="https://api.example.com/v1",
+            model="demo",
+            proxy="",
+        )
+
+        ChatModel(config)
+
+        mock_from_url.assert_not_called()
+        mock_httpx_client.assert_called_once_with(trust_env=False)
+        self.assertIs(mock_openai.call_args.kwargs.get("http_client"), http_client)
 
 
 if __name__ == "__main__":

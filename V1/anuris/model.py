@@ -1,4 +1,5 @@
 import json
+import os
 from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Dict, List, Optional
 
@@ -17,26 +18,28 @@ class ChatModel:
         self.debug = config.debug
         self.base_url = self._normalize_base_url(config.base_url)
 
-        if config.proxy and config.proxy.startswith("socks"):
-            transport = SyncProxyTransport.from_url(config.proxy)
-            http_client = httpx.Client(transport=transport)
-            self.client = OpenAI(
-                api_key=config.api_key,
-                base_url=self.base_url,
-                http_client=http_client,
-                timeout=30.0,
-            )
-        else:
-            self.client = OpenAI(
-                api_key=config.api_key,
-                base_url=self.base_url,
-                timeout=30.0,
-            )
+        proxy_url, proxy_source = self._resolve_proxy_url()
+        self.proxy_url = proxy_url or ""
+        self.proxy_source = proxy_source
+
+        # Always pass an explicit httpx client so we can safely handle
+        # system proxy env vars like ALL_PROXY=socks://... (httpx doesn't accept
+        # the "socks://" scheme). We also disable trust_env so httpx won't try
+        # to parse env proxies on its own.
+        self.http_client = self._build_http_client(proxy_url)
+
+        self.client = OpenAI(
+            api_key=config.api_key,
+            base_url=self.base_url,
+            http_client=self.http_client,
+            timeout=30.0,
+        )
 
         if self.debug:
             self._debug_print(
                 "Initialized ChatModel with "
-                f"model={config.model}, base_url={self.base_url}, proxy={config.proxy}, reasoning={config.reasoning}"
+                f"model={config.model}, base_url={self.base_url}, proxy={self.proxy_url} ({self.proxy_source}), "
+                f"reasoning={config.reasoning}"
             )
 
     def _debug_print(self, message: str) -> None:
@@ -138,6 +141,135 @@ class ChatModel:
         if "anthropic" in base_url:
             return "anthropic"
         return "generic"
+
+    def _resolve_proxy_url(self) -> tuple[Optional[str], str]:
+        """
+        Resolve the effective proxy URL.
+
+        Precedence:
+        1) Explicit config.proxy (CLI/config file)
+        2) System proxy env vars (e.g., HTTPS_PROXY, ALL_PROXY), unless NO_PROXY matches
+        """
+        explicit = (self.config.proxy or "").strip()
+        if explicit:
+            return self._normalize_proxy_url(explicit), "config"
+
+        env_proxy = self._get_env_proxy_url(self.base_url or self.config.base_url or "")
+        if env_proxy:
+            return self._normalize_proxy_url(env_proxy), "env"
+
+        return None, "none"
+
+    def _build_http_client(self, proxy_url: Optional[str]) -> httpx.Client:
+        """
+        Build an httpx client appropriate for the resolved proxy scheme.
+
+        We set trust_env=False to avoid httpx parsing environment proxies directly
+        (which can crash on ALL_PROXY=socks://...).
+        """
+        if not proxy_url:
+            return httpx.Client(trust_env=False)
+
+        normalized = self._normalize_proxy_url(proxy_url)
+        scheme = urlsplit(normalized).scheme.lower()
+
+        if scheme in {"socks", "socks5", "socks5h", "socks4", "socks4a"}:
+            transport = SyncProxyTransport.from_url(normalized)
+            return httpx.Client(transport=transport, trust_env=False)
+
+        return httpx.Client(proxy=normalized, trust_env=False)
+
+    @staticmethod
+    def _normalize_proxy_url(proxy_url: str) -> str:
+        """
+        Normalize proxy URL scheme(s) so downstream libraries accept them.
+
+        - Many tools export SOCKS proxies as `socks://host:port`.
+          httpx expects `socks5://...` (or socks4/5 variants), so we treat
+          plain `socks://` as `socks5://`.
+        """
+        value = (proxy_url or "").strip()
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() == "socks":
+            return urlunsplit(("socks5", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+        return value
+
+    @classmethod
+    def _get_env_proxy_url(cls, base_url: str) -> Optional[str]:
+        """
+        Return the proxy URL from the environment for a given destination base URL.
+
+        This intentionally *does not* delegate to httpx trust_env handling because we
+        need to normalize/ignore values that would otherwise raise.
+        """
+        target = (base_url or "").strip()
+        if not target:
+            return None
+
+        parsed = urlsplit(target)
+        scheme = (parsed.scheme or "https").lower()
+        hostname = (parsed.hostname or "").lower()
+        port = parsed.port
+
+        if hostname and cls._is_no_proxy_host(hostname, port):
+            return None
+
+        if scheme == "https":
+            return cls._get_env_var("HTTPS_PROXY") or cls._get_env_var("ALL_PROXY")
+        if scheme == "http":
+            return cls._get_env_var("HTTP_PROXY") or cls._get_env_var("ALL_PROXY")
+        return cls._get_env_var("ALL_PROXY") or cls._get_env_var("HTTPS_PROXY") or cls._get_env_var("HTTP_PROXY")
+
+    @staticmethod
+    def _get_env_var(key: str) -> Optional[str]:
+        # Env vars are often set in both cases; check both for robustness.
+        return os.environ.get(key) or os.environ.get(key.lower())
+
+    @classmethod
+    def _is_no_proxy_host(cls, hostname: str, port: Optional[int]) -> bool:
+        """
+        Best-effort NO_PROXY matching. Supports:
+        - "*" to disable proxying entirely
+        - exact host matches
+        - domain suffix matches (".example.com" or "example.com" matches subdomains)
+        - optional ":port" entries
+        """
+        raw = cls._get_env_var("NO_PROXY") or ""
+        if not raw:
+            return False
+
+        host = (hostname or "").strip(".").lower()
+
+        for entry in raw.split(","):
+            token = entry.strip()
+            if not token:
+                continue
+            if token == "*":
+                return True
+
+            token_host = token
+            token_port: Optional[int] = None
+
+            # Handle simple host:port (ignore IPv6 complexities; best-effort).
+            if ":" in token and token.count(":") == 1:
+                left, right = token.split(":", 1)
+                if right.isdigit():
+                    token_host = left
+                    token_port = int(right)
+
+            token_host = token_host.strip().lstrip(".").lower()
+
+            if token_port is not None and port is not None and token_port != port:
+                continue
+
+            if host == token_host:
+                return True
+            if token_host and host.endswith("." + token_host):
+                return True
+
+        return False
 
     @staticmethod
     def _normalize_base_url(raw_base_url: str) -> str:

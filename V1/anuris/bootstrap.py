@@ -70,23 +70,29 @@ def maybe_save_config(args: argparse.Namespace, config_dict: dict, config_manage
 
 def ensure_required_config(config: Config, config_manager: ConfigManager) -> Config:
     """Prompt user for required config fields when missing and persist them."""
+    console = Console()
+
+    def ask(prompt: str) -> str:
+        try:
+            return Prompt.ask(prompt)
+        except (KeyboardInterrupt, EOFError):
+            console.print("\nConfiguration cancelled.", style="yellow")
+            raise SystemExit(130) from None
+
     if not config.base_url:
-        console = Console()
-        base_url = Prompt.ask("Please enter the API base URL (e.g., https://api.deepseek.com/v1)")
+        base_url = ask("Please enter the API base URL (e.g., https://api.deepseek.com/v1)")
         config_manager.save_config(base_url=base_url)
         config.base_url = base_url
         console.print("Base URL saved successfully!", style="green")
 
     if not config.model:
-        console = Console()
-        model = Prompt.ask("Please enter the model name (e.g., deepseek-chat)")
+        model = ask("Please enter the model name (e.g., deepseek-chat)")
         config_manager.save_config(model=model)
         config.model = model
         console.print("Model saved successfully!", style="green")
 
     if not config.api_key:
-        console = Console()
-        api_key = Prompt.ask("Please enter your API key")
+        api_key = ask("Please enter your API key")
         config_manager.save_config(api_key=api_key)
         config.api_key = api_key
         console.print("API key saved successfully!", style="green")

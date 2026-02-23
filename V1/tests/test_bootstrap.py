@@ -110,7 +110,19 @@ class BootstrapTests(unittest.TestCase):
             ],
         )
         self.assertEqual(mock_prompt_ask.call_count, 3)
-        self.assertEqual(mock_console_cls.call_count, 3)
+        self.assertEqual(mock_console_cls.call_count, 1)
+
+    @patch("anuris.bootstrap.Prompt.ask", side_effect=KeyboardInterrupt)
+    @patch("anuris.bootstrap.Console")
+    def test_ensure_required_config_exits_cleanly_on_ctrl_c(self, mock_console_cls, mock_prompt_ask):
+        config = Config(api_key="", model="", base_url="")
+        manager = FakeConfigManager(config)
+
+        with self.assertRaises(SystemExit) as ctx:
+            ensure_required_config(config, manager)
+
+        self.assertEqual(ctx.exception.code, 130)
+        self.assertEqual(manager.saved_calls, [])
 
     @patch("anuris.bootstrap.Prompt.ask")
     def test_ensure_required_config_skips_prompts_when_values_present(self, mock_prompt_ask):
