@@ -505,6 +505,77 @@ class AgentLoopRunnerTests(unittest.TestCase):
         self.assertEqual(result.final_text, "done")
         self.assertTrue(any(event.startswith("read_file ->") for event in result.tool_events))
 
+    def test_hot_swap_disables_tools_for_plain_chat(self):
+        model = FakeModel([make_response("hi there", tool_calls=None)])
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=4, hot_swap_tools=True)
+
+        result = runner.run(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "hello"},
+            ]
+        )
+
+        self.assertEqual(result.final_text, "hi there")
+        payload = model.client.chat.completions.request_payloads[0]
+        names = [item["function"]["name"] for item in payload.get("tools") or []]
+        self.assertIn("search_tools", names)
+        self.assertNotIn("write_file", names)
+        self.assertEqual(payload.get("tool_choice"), "auto")
+
+    def test_hot_swap_disables_tools_for_test_ping_chat(self):
+        model = FakeModel([make_response("yes", tool_calls=None)])
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=4, hot_swap_tools=True)
+
+        result = runner.run(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "test,are you working?"},
+            ]
+        )
+
+        self.assertEqual(result.final_text, "yes")
+        payload = model.client.chat.completions.request_payloads[0]
+        names = [item["function"]["name"] for item in payload.get("tools") or []]
+        self.assertIn("search_tools", names)
+        self.assertNotIn("write_file", names)
+        self.assertEqual(payload.get("tool_choice"), "auto")
+
+    def test_hot_swap_can_activate_write_tools_via_meta_tools(self):
+        tool_calls_round_1 = [
+            make_tool_call("call_1", "search_tools", '{"query":"write file","limit":5}'),
+            make_tool_call(
+                "call_2",
+                "activate_tools",
+                '{"names":["read_file","write_file","edit_file"],"mode":"add"}',
+            ),
+        ]
+        tool_calls_round_2 = [
+            make_tool_call("call_3", "write_file", '{"path":"a.txt","content":"hello"}'),
+        ]
+        responses = [
+            make_response("", tool_calls=tool_calls_round_1),
+            make_response("", tool_calls=tool_calls_round_2),
+            make_response("done", tool_calls=None),
+        ]
+        model = FakeModel(responses)
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=4, hot_swap_tools=True)
+
+        result = runner.run(
+            [{"role": "system", "content": "system"}, {"role": "user", "content": "please update file"}]
+        )
+
+        self.assertEqual(result.final_text, "done")
+        first_payload_tools = model.client.chat.completions.request_payloads[0].get("tools") or []
+        first_names = [item["function"]["name"] for item in first_payload_tools]
+        self.assertIn("search_tools", first_names)
+        self.assertNotIn("write_file", first_names)
+
+        second_payload_tools = model.client.chat.completions.request_payloads[1].get("tools") or []
+        names = [item["function"]["name"] for item in second_payload_tools]
+        self.assertIn("write_file", names)
+        self.assertIn("edit_file", names)
+
 
 if __name__ == "__main__":
     unittest.main()

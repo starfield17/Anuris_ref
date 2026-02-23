@@ -1,4 +1,5 @@
 import json
+import re
 import shlex
 import time
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ class AgentLoopRunner:
         include_background_tasks: bool = True,
         include_team_ops: bool = True,
         include_compaction: bool = True,
+        hot_swap_tools: bool = True,
         compaction_threshold_tokens: int = 50000,
         keep_recent_tool_messages: int = 3,
         teammate_max_rounds: int = 24,
@@ -57,6 +59,7 @@ class AgentLoopRunner:
         self.include_background_tasks = include_background_tasks
         self.include_team_ops = include_team_ops
         self.include_compaction = include_compaction
+        self.hot_swap_tools = hot_swap_tools
         self.teammate_max_rounds = max(1, int(teammate_max_rounds))
         self.teammate_max_tool_calls = max(1, int(teammate_max_tool_calls))
         self.teammate_max_runtime_sec = max(10, int(teammate_max_runtime_sec))
@@ -102,6 +105,13 @@ class AgentLoopRunner:
             include_background_tasks=include_background_tasks,
             include_team_ops=include_team_ops,
         )
+        self.tool_schema_by_name: Dict[str, Dict[str, Any]] = {
+            schema.get("function", {}).get("name", ""): schema for schema in self.tool_schemas
+        }
+        self.hot_swap_meta_schemas = self._build_hot_swap_meta_schemas() if self.hot_swap_tools else []
+        self.hot_swap_meta_names = {
+            schema.get("function", {}).get("name", "") for schema in self.hot_swap_meta_schemas
+        }
 
         if include_task and getattr(self.tool_executor, "subagent_runner", None) is None:
             self.tool_executor.set_subagent_runner(self._run_subagent)
@@ -133,6 +143,13 @@ class AgentLoopRunner:
             api_messages[-1]["content"] = content
 
         tool_events: List[str] = []
+        active_tool_names: set[str] = (
+            set(self.tool_schema_by_name.keys()) if not self.hot_swap_tools else set()
+        )
+        active_tools = self._compose_active_tool_schemas(active_tool_names)
+        active_tool_choice = "auto" if active_tools else None
+        if progress_callback and self.hot_swap_tools:
+            progress_callback("[agent] tool hot-swap enabled (use search_tools / activate_tools)")
 
         for round_index in range(1, self.max_rounds + 1):
             if self.include_background_tasks:
@@ -170,8 +187,8 @@ class AgentLoopRunner:
             response = self.model.create_completion(
                 messages=api_messages,
                 stream=False,
-                tools=self.tool_schemas,
-                tool_choice="auto",
+                tools=active_tools or None,
+                tool_choice=active_tool_choice,
             )
             payload = self._extract_assistant_payload(response)
             tool_calls = payload["tool_calls"]
@@ -195,7 +212,21 @@ class AgentLoopRunner:
 
             for tool_call in tool_calls:
                 args = self._parse_args(tool_call.get("arguments"))
-                tool_output = self.tool_executor.execute(tool_call["name"], args)
+                if self.hot_swap_tools and tool_call["name"] in self.hot_swap_meta_names:
+                    tool_output = self._execute_hot_swap_tool(tool_call["name"], args, active_tool_names)
+                    active_tools = self._compose_active_tool_schemas(active_tool_names)
+                    active_tool_choice = "auto" if active_tools else None
+                else:
+                    if (
+                        self.hot_swap_tools
+                        and tool_call["name"] not in active_tool_names
+                        and tool_call["name"] in self.tool_schema_by_name
+                    ):
+                        # Compatibility fallback: if a model emits a non-active tool call directly,
+                        # execute it and mark it active for subsequent turns.
+                        active_tool_names.add(tool_call["name"])
+                        active_tools = self._compose_active_tool_schemas(active_tool_names)
+                    tool_output = self.tool_executor.execute(tool_call["name"], args)
                 event = f"{tool_call['name']} -> {tool_output[:200]}"
                 tool_events.append(event)
                 if progress_callback:
@@ -328,8 +359,15 @@ class AgentLoopRunner:
 
     def _inject_agent_instruction(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         instruction_lines = [
-            "You are a coding agent. Prefer tools over long prose.",
+            "You are a coding agent. Use tools only when they are needed for execution or verification.",
         ]
+        if self.hot_swap_tools:
+            instruction_lines.append(
+                "Tool hot-swap is enabled: first call search_tools, then activate_tools with the names you need."
+            )
+            instruction_lines.append(
+                "Only activated tools are guaranteed to remain available; keep the active set minimal."
+            )
         if self.include_todo:
             instruction_lines.append(
                 "Use TodoWrite for multi-step tasks. Keep exactly one item in_progress."
@@ -361,6 +399,176 @@ class AgentLoopRunner:
             )
         instruction = "\n".join(instruction_lines)
         return [{"role": "system", "content": instruction}] + messages
+
+    def _compose_active_tool_schemas(self, active_tool_names: set[str]) -> List[Dict[str, Any]]:
+        if not self.hot_swap_tools:
+            return self.tool_schemas
+        active = [
+            schema
+            for schema in self.tool_schemas
+            if schema.get("function", {}).get("name", "") in active_tool_names
+        ]
+        return self.hot_swap_meta_schemas + active
+
+    def _execute_hot_swap_tool(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        active_tool_names: set[str],
+    ) -> str:
+        if tool_name == "search_tools":
+            query = str(args.get("query", "") or "").strip()
+            limit = int(args.get("limit", 12) or 12)
+            return self._search_tools(query=query, limit=limit, active_tool_names=active_tool_names)
+
+        if tool_name == "activate_tools":
+            names = args.get("names")
+            if isinstance(names, str):
+                names = [names]
+            if not isinstance(names, list) or not names:
+                return "Error: activate_tools requires non-empty names[]"
+            mode = str(args.get("mode", "add") or "add").lower()
+            if mode not in {"add", "replace"}:
+                return "Error: mode must be add or replace"
+            wanted = [str(name).strip() for name in names if str(name).strip()]
+            valid = [name for name in wanted if name in self.tool_schema_by_name]
+            missing = [name for name in wanted if name not in self.tool_schema_by_name]
+
+            if mode == "replace":
+                active_tool_names.clear()
+            for name in valid:
+                active_tool_names.add(name)
+
+            return self._render_active_tool_state(active_tool_names, missing)
+
+        if tool_name == "deactivate_tools":
+            names = args.get("names")
+            if isinstance(names, str):
+                names = [names]
+            if not isinstance(names, list) or not names:
+                return "Error: deactivate_tools requires non-empty names[]"
+            for name in names:
+                active_tool_names.discard(str(name).strip())
+            return self._render_active_tool_state(active_tool_names, [])
+
+        if tool_name == "list_active_tools":
+            return self._render_active_tool_state(active_tool_names, [])
+
+        return f"Error: Unknown hot-swap tool '{tool_name}'"
+
+    def _search_tools(self, query: str, limit: int, active_tool_names: set[str]) -> str:
+        limit = max(1, min(50, int(limit)))
+        candidates: List[tuple[int, str, str]] = []
+        norm_query = query.strip().lower()
+        tokens = re.findall(r"[a-z0-9_\\-]+", norm_query)
+        for name, schema in self.tool_schema_by_name.items():
+            desc = schema.get("function", {}).get("description", "")
+            hay_name = name.lower()
+            hay_desc = str(desc).lower()
+            if not norm_query:
+                score = 1
+            else:
+                score = 0
+                if norm_query in hay_name:
+                    score += 8
+                if norm_query in hay_desc:
+                    score += 4
+                for token in tokens:
+                    if token in hay_name:
+                        score += 3
+                    elif token in hay_desc:
+                        score += 1
+            if score > 0:
+                candidates.append((score, name, str(desc)))
+
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        top = candidates[:limit]
+        if not top:
+            return (
+                f"No tools matched query '{query}'. "
+                f"Use query='' to list all tools. "
+                f"Currently active: {', '.join(sorted(active_tool_names)) or '(none)'}"
+            )
+
+        lines = [f"Found {len(top)} tool(s) (query='{query or '*'}'):"]
+        for _, name, desc in top:
+            marker = " [active]" if name in active_tool_names else ""
+            lines.append(f"- {name}{marker}: {desc}")
+        lines.append("Use activate_tools with names[] to enable selected tools.")
+        lines.append(f"Currently active: {', '.join(sorted(active_tool_names)) or '(none)'}")
+        return "\n".join(lines)
+
+    def _render_active_tool_state(self, active_tool_names: set[str], missing: List[str]) -> str:
+        active_sorted = sorted(active_tool_names)
+        lines = [f"Active tools ({len(active_sorted)}): {', '.join(active_sorted) if active_sorted else '(none)'}"]
+        if missing:
+            lines.append(f"Ignored unknown tools: {', '.join(sorted(set(missing)))}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_hot_swap_meta_schemas() -> List[Dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_tools",
+                    "description": "Search available tools by name/description before activation.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "activate_tools",
+                    "description": "Activate one or more tools for subsequent rounds.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "names": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "mode": {"type": "string", "enum": ["add", "replace"]},
+                        },
+                        "required": ["names"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "deactivate_tools",
+                    "description": "Deactivate one or more active tools.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "names": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["names"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_active_tools",
+                    "description": "Show currently active tools.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+        ]
 
     def _extract_assistant_payload(self, response: Any) -> Dict[str, Any]:
         """
