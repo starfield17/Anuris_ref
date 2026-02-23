@@ -31,9 +31,10 @@ class FakeConfigManager:
 class BootstrapTests(unittest.TestCase):
     def test_build_arg_parser_parses_known_args(self):
         parser = build_arg_parser()
-        args = parser.parse_args(["--model", "demo-model", "--debug"])
+        args = parser.parse_args(["--model", "demo-model", "--debug", "--reasoning", "off"])
         self.assertEqual(args.model, "demo-model")
         self.assertTrue(args.debug)
+        self.assertEqual(args.reasoning, "off")
 
     def test_resolve_system_prompt_arg_from_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -62,6 +63,7 @@ class BootstrapTests(unittest.TestCase):
             base_url="https://api.example.com/v1",
             debug=False,
             temperature=0.8,
+            reasoning="off",
             system_prompt=None,
             system_prompt_file=None,
             save_config=False,
@@ -72,6 +74,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(merged_config.model, "cli-model")
         self.assertEqual(merged_config.base_url, "https://api.example.com/v1")
         self.assertEqual(merged_config.temperature, 0.8)
+        self.assertFalse(merged_config.reasoning)
         self.assertEqual(config_dict["api_key"], "saved-key")
 
     def test_maybe_save_config_only_when_flag_set(self):

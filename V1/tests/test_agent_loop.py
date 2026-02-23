@@ -27,6 +27,16 @@ class FakeModel:
         self.config = SimpleNamespace(model="fake-model", temperature=0.3)
         self.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(responses)))
 
+    def create_completion(self, messages, stream, tools=None, tool_choice=None):
+        return self.client.chat.completions.create(
+            model=self.config.model,
+            messages=messages,
+            temperature=self.config.temperature,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=stream,
+        )
+
 
 def make_response(content, tool_calls=None):
     message = SimpleNamespace(content=content, tool_calls=tool_calls)

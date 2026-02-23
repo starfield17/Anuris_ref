@@ -33,7 +33,8 @@ class ChatModel:
 
         if self.debug:
             self._debug_print(
-                f"Initialized ChatModel with model={config.model}, base_url={config.base_url}, proxy={config.proxy}"
+                "Initialized ChatModel with "
+                f"model={config.model}, base_url={config.base_url}, proxy={config.proxy}, reasoning={config.reasoning}"
             )
 
     def _debug_print(self, message: str) -> None:
@@ -60,10 +61,8 @@ class ChatModel:
             if self.debug:
                 self._debug_print(f"Sending request with messages: {json.dumps(api_messages[-2:], indent=2)}")
 
-            response = self.client.chat.completions.create(
-                model=self.config.model,
+            response = self.create_completion(
                 messages=api_messages,
-                temperature=self.config.temperature,
                 stream=True,
             )
 
@@ -86,3 +85,43 @@ class ChatModel:
         except Exception as exc:
             self._debug_print(f"Exception occurred: {type(exc).__name__}: {str(exc)}")
             raise Exception(f"API Error ({type(exc).__name__}): {str(exc)}") from exc
+
+    def create_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        stream: bool,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
+    ) -> Any:
+        """Create a chat completion with provider-specific reasoning toggle support."""
+        request_kwargs: Dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "stream": stream,
+        }
+        if tools is not None:
+            request_kwargs["tools"] = tools
+        if tool_choice is not None:
+            request_kwargs["tool_choice"] = tool_choice
+
+        extra_body = self._build_reasoning_extra_body()
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
+
+        return self.client.chat.completions.create(**request_kwargs)
+
+    def _build_reasoning_extra_body(self) -> Optional[Dict[str, Any]]:
+        """
+        Build provider-specific payload for reasoning mode.
+        DeepSeek expects `thinking.type = enabled|disabled`.
+        """
+        if not self._supports_reasoning_switch():
+            return None
+        thinking_type = "enabled" if self.config.reasoning else "disabled"
+        return {"thinking": {"type": thinking_type}}
+
+    def _supports_reasoning_switch(self) -> bool:
+        base_url = (self.config.base_url or "").lower()
+        model_name = (self.config.model or "").lower()
+        return "deepseek" in base_url or "deepseek" in model_name

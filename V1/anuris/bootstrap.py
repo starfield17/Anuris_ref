@@ -15,6 +15,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", help="API base URL (e.g., https://api.example.com)")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--temperature", type=float, help="Temperature parameter for generation (e.g., 0.7)")
+    parser.add_argument(
+        "--reasoning",
+        choices=["on", "off"],
+        default=None,
+        help="Enable or disable reasoning mode for providers that support it (e.g., DeepSeek thinking mode).",
+    )
     parser.add_argument("--system-prompt", help="Custom system prompt")
     parser.add_argument("--system-prompt-file", help="File containing custom system prompt")
     parser.add_argument(
@@ -47,6 +53,8 @@ def merge_runtime_config(args: argparse.Namespace, config_manager: ConfigManager
     config_dict = config.to_dict()
 
     for key, value in vars(args).items():
+        if key == "reasoning" and isinstance(value, str):
+            value = value == "on"
         if value is not None and key in config_dict:
             config_dict[key] = value
 

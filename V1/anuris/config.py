@@ -16,6 +16,7 @@ class Config:
     debug: bool = False
     base_url: str = ""
     temperature: float = 0.4
+    reasoning: bool = True
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @classmethod

@@ -47,13 +47,11 @@ class AgentLoopRunner:
         tool_events: List[str] = []
 
         for round_index in range(1, self.max_rounds + 1):
-            response = self.model.client.chat.completions.create(
-                model=self.model.config.model,
+            response = self.model.create_completion(
                 messages=api_messages,
-                temperature=self.model.config.temperature,
+                stream=False,
                 tools=TOOL_SCHEMAS,
                 tool_choice="auto",
-                stream=False,
             )
             message = response.choices[0].message
             tool_calls = message.tool_calls or []
