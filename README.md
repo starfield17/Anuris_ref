@@ -76,6 +76,28 @@ Key routes:
 
 Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 
+### Regression Harness
+
+Run deterministic regression cases against the local debug server:
+
+```bash
+cd V1
+python -m anuris.regression --case agent_status
+```
+
+Defaults:
+
+* Cases directory: `V1/regression_cases/`
+* Reports directory: `V1/.anuris_regression_runs/`
+
+Useful flags:
+
+* `--server-url http://127.0.0.1:8765`
+* `--cases-dir <dir>`
+* `--case <name>`
+* `--output-dir <dir>`
+* `--fail-fast`
+
 ### Commands
 
 * `/clear` – Clear chat history and attachments

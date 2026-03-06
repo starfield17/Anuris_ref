@@ -1,0 +1,12 @@
+{
+  "name": "agent_status",
+  "request_kind": "message",
+  "input": "/agent status",
+  "assertions": {
+    "final_text_contains": "Agent mode: ON",
+    "transcript_contains": "Agent mode: ON",
+    "event_type_present": ["request_started", "assistant_message", "request_finished"],
+    "status_equals": "idle",
+    "round_count_max": 0
+  }
+}

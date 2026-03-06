@@ -34,6 +34,15 @@ python Anuris_rebuild.py --debug-server --debug-host 127.0.0.1 --debug-port 8765
 
 Artifacts are written under `V1/.anuris_debug/sessions/` as `session.json`, `events.jsonl`, and `transcript.md`.
 
+Regression harness:
+
+```bash
+cd V1
+python -m anuris.regression --case agent_status
+```
+
+Default cases live under `V1/regression_cases/`; run outputs are written to `V1/.anuris_regression_runs/`.
+
 Config is stored at:
 
 - `~/.anuris_config.toml`
