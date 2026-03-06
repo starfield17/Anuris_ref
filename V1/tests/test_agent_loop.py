@@ -559,13 +559,22 @@ class AgentLoopRunnerTests(unittest.TestCase):
             make_response("done", tool_calls=None),
         ]
         model = FakeModel(responses)
-        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=4, hot_swap_tools=True)
 
-        result = runner.run(
-            [{"role": "system", "content": "system"}, {"role": "user", "content": "please update file"}]
-        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            runner = AgentLoopRunner(
+                model=model,
+                tool_executor=AgentToolExecutor(workspace_root=workspace),
+                max_rounds=4,
+                hot_swap_tools=True,
+            )
 
-        self.assertEqual(result.final_text, "done")
+            result = runner.run(
+                [{"role": "system", "content": "system"}, {"role": "user", "content": "please update file"}]
+            )
+
+            self.assertEqual(result.final_text, "done")
+            self.assertEqual((workspace / "a.txt").read_text(), "hello")
         first_payload_tools = model.client.chat.completions.request_payloads[0].get("tools") or []
         first_names = [item["function"]["name"] for item in first_payload_tools]
         self.assertIn("search_tools", first_names)

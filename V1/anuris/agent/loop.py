@@ -17,6 +17,7 @@ class AgentRunResult:
 
     final_text: str
     rounds: int
+    reasoning_text: str = ""
     tool_events: List[str] = field(default_factory=list)
 
 
@@ -131,6 +132,7 @@ class AgentLoopRunner:
         messages: List[Dict[str, Any]],
         attachments: Optional[List[Dict[str, Any]]] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> AgentRunResult:
         if not messages or not isinstance(messages, list):
             raise ValueError("Invalid messages format")
@@ -150,6 +152,7 @@ class AgentLoopRunner:
         active_tool_choice = "auto" if active_tools else None
         if progress_callback and self.hot_swap_tools:
             progress_callback("[agent] tool hot-swap enabled (use search_tools / activate_tools)")
+        reasoning_parts: List[str] = []
 
         for round_index in range(1, self.max_rounds + 1):
             if self.include_background_tasks:
@@ -174,6 +177,15 @@ class AgentLoopRunner:
                     )
                     if progress_callback:
                         progress_callback(f"[agent] received {len(notifications)} background update(s)")
+                    if event_callback:
+                        event_callback(
+                            {
+                                "type": "assistant_message",
+                                "round": round_index,
+                                "content": text,
+                                "source": "background",
+                            }
+                        )
 
             if self.include_compaction:
                 self.compactor.micro_compact(api_messages)
@@ -181,9 +193,13 @@ class AgentLoopRunner:
                     api_messages = self.compactor.auto_compact(api_messages)
                     if progress_callback:
                         progress_callback("[agent] context auto-compacted")
+                    if event_callback:
+                        event_callback({"type": "agent_round_started", "round": round_index, "note": "context auto-compacted"})
 
             if progress_callback:
                 progress_callback(f"[agent] round {round_index}...")
+            if event_callback:
+                event_callback({"type": "agent_round_started", "round": round_index})
             response = self.model.create_completion(
                 messages=api_messages,
                 stream=False,
@@ -192,6 +208,17 @@ class AgentLoopRunner:
             )
             payload = self._extract_assistant_payload(response)
             tool_calls = payload["tool_calls"]
+            reasoning_text = payload.get("reasoning_content") or ""
+            if reasoning_text:
+                reasoning_parts.append(reasoning_text)
+                if event_callback:
+                    event_callback(
+                        {
+                            "type": "assistant_reasoning",
+                            "round": round_index,
+                            "content": reasoning_text,
+                        }
+                    )
 
             assistant_message = {
                 "role": "assistant",
@@ -204,14 +231,33 @@ class AgentLoopRunner:
             api_messages.append(assistant_message)
 
             if not tool_calls:
+                if event_callback and payload["content"]:
+                    event_callback(
+                        {
+                            "type": "assistant_message",
+                            "round": round_index,
+                            "content": payload["content"],
+                        }
+                    )
                 return AgentRunResult(
                     final_text=payload["content"],
                     rounds=round_index,
+                    reasoning_text="\n\n".join(part for part in reasoning_parts if part),
                     tool_events=tool_events,
                 )
 
             for tool_call in tool_calls:
                 args = self._parse_args(tool_call.get("arguments"))
+                if event_callback:
+                    event_callback(
+                        {
+                            "type": "tool_called",
+                            "round": round_index,
+                            "tool_name": tool_call["name"],
+                            "arguments": args,
+                            "tool_call_id": tool_call["id"],
+                        }
+                    )
                 if self.hot_swap_tools and tool_call["name"] in self.hot_swap_meta_names:
                     tool_output = self._execute_hot_swap_tool(tool_call["name"], args, active_tool_names)
                     active_tools = self._compose_active_tool_schemas(active_tool_names)
@@ -231,6 +277,16 @@ class AgentLoopRunner:
                 tool_events.append(event)
                 if progress_callback:
                     progress_callback(f"[tool] {event}")
+                if event_callback:
+                    event_callback(
+                        {
+                            "type": "tool_result",
+                            "round": round_index,
+                            "tool_name": tool_call["name"],
+                            "tool_call_id": tool_call["id"],
+                            "content": str(tool_output),
+                        }
+                    )
                 api_messages.append(
                     {
                         "role": "tool",

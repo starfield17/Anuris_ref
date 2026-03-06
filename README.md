@@ -55,6 +55,27 @@ python Anuris_rebuild.py --api-key <YOUR_API_KEY> --model <MODEL_NAME>
 
 Agent mode is enabled by default at startup. Use `/agent off` to switch back to standard chat mode.
 
+### Headless Debug Server
+
+Start a local HTTP debug server for LLM agents and automated debugging:
+
+```bash
+python Anuris_rebuild.py --debug-server --api-key <YOUR_API_KEY> --model <MODEL_NAME> --base-url <BASE_URL>
+```
+
+Default endpoint: `http://127.0.0.1:8765`
+
+Key routes:
+
+* `POST /sessions` – Create a headless session
+* `POST /sessions/{id}/message` – Send a normal message
+* `POST /sessions/{id}/task` – Send a task-style agent request
+* `GET /sessions/{id}` – Inspect session state
+* `GET /sessions/{id}/events` – Read structured debug events
+* `GET /sessions/{id}/transcript` – Read replayable Markdown transcript
+
+Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
+
 ### Commands
 
 * `/clear` – Clear chat history and attachments

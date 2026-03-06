@@ -31,10 +31,12 @@ class FakeConfigManager:
 class BootstrapTests(unittest.TestCase):
     def test_build_arg_parser_parses_known_args(self):
         parser = build_arg_parser()
-        args = parser.parse_args(["--model", "demo-model", "--debug", "--reasoning", "off"])
+        args = parser.parse_args(["--model", "demo-model", "--debug", "--reasoning", "off", "--debug-server", "--debug-port", "9001"])
         self.assertEqual(args.model, "demo-model")
         self.assertTrue(args.debug)
         self.assertEqual(args.reasoning, "off")
+        self.assertTrue(args.debug_server)
+        self.assertEqual(args.debug_port, 9001)
 
     def test_resolve_system_prompt_arg_from_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

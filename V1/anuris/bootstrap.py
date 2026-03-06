@@ -28,6 +28,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Save the current settings as default configuration",
     )
+    parser.add_argument("--debug-server", action="store_true", help="Run the local debug HTTP server")
+    parser.add_argument("--debug-host", default="127.0.0.1", help="Debug server listen host")
+    parser.add_argument("--debug-port", type=int, default=8765, help="Debug server listen port")
+    parser.add_argument("--debug-dir", help="Directory for debug sessions and transcripts")
     return parser
 
 
