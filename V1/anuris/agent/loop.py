@@ -61,6 +61,7 @@ class AgentLoopRunner:
         self.include_team_ops = include_team_ops
         self.include_compaction = include_compaction
         self.hot_swap_tools = hot_swap_tools
+        self.base_tool_names = {"bash", "read_file"}
         self.teammate_max_rounds = max(1, int(teammate_max_rounds))
         self.teammate_max_tool_calls = max(1, int(teammate_max_tool_calls))
         self.teammate_max_runtime_sec = max(10, int(teammate_max_runtime_sec))
@@ -146,12 +147,12 @@ class AgentLoopRunner:
 
         tool_events: List[str] = []
         active_tool_names: set[str] = (
-            set(self.tool_schema_by_name.keys()) if not self.hot_swap_tools else set()
+            set(self.tool_schema_by_name.keys()) if not self.hot_swap_tools else set(self.base_tool_names)
         )
         active_tools = self._compose_active_tool_schemas(active_tool_names)
         active_tool_choice = "auto" if active_tools else None
         if progress_callback and self.hot_swap_tools:
-            progress_callback("[agent] tool hot-swap enabled (use search_tools / activate_tools)")
+            progress_callback("[agent] base tools active: bash, read_file; use search_tools / activate_tools for more")
         reasoning_parts: List[str] = []
 
         for round_index in range(1, self.max_rounds + 1):
@@ -359,6 +360,7 @@ class AgentLoopRunner:
     def _run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
         """Run a fresh-context subagent and return only its final summary."""
         allow_write_edit = agent_type != "Explore"
+        repo_inspection = self._is_repo_inspection_prompt(prompt)
         sub_executor = AgentToolExecutor(
             workspace_root=self.tool_executor.workspace_root,
             include_write_edit=allow_write_edit,
@@ -371,7 +373,7 @@ class AgentLoopRunner:
         sub_runner = AgentLoopRunner(
             model=self.model,
             tool_executor=sub_executor,
-            max_rounds=max(4, self.max_rounds // 2),
+            max_rounds=max(8 if repo_inspection else 4, self.max_rounds if repo_inspection else self.max_rounds // 2),
             require_reasoning_content=self.require_reasoning_content,
             include_todo=False,
             include_task=False,
@@ -385,12 +387,36 @@ class AgentLoopRunner:
         sub_messages = [
             {
                 "role": "system",
-                "content": "You are a coding subagent. Complete the task and return a concise summary.",
+                "content": (
+                    "You are a coding subagent. "
+                    "bash and read_file are always available base tools. "
+                    "For repository inspection, git history, branch, diff, commit, status, filesystem, "
+                    "or environment diagnosis tasks, use bash and/or read_file first. "
+                    "Use search_tools only to discover higher-level tools beyond those base tools. "
+                    "Complete the task and return a concise summary."
+                ),
             },
             {"role": "user", "content": prompt},
         ]
         result = sub_runner.run(sub_messages)
         return result.final_text or "(no summary)"
+
+    @staticmethod
+    def _is_repo_inspection_prompt(prompt: str) -> bool:
+        text = (prompt or "").lower()
+        keywords = (
+            "git",
+            "repo",
+            "repository",
+            "commit",
+            "branch",
+            "diff",
+            "status",
+            "log",
+            "filesystem",
+            "file tree",
+        )
+        return any(keyword in text for keyword in keywords)
 
     @staticmethod
     def _parse_args(raw_args: Any) -> Dict[str, Any]:
@@ -436,10 +462,10 @@ class AgentLoopRunner:
         ]
         if self.hot_swap_tools:
             instruction_lines.append(
-                "Tool hot-swap is enabled: first call search_tools, then activate_tools with the names you need."
+                "Tool hot-swap is enabled: bash and read_file are always active base tools; use search_tools, then activate_tools for additional tools."
             )
             instruction_lines.append(
-                "Only activated tools are guaranteed to remain available; keep the active set minimal."
+                "Only bash/read_file plus activated tools are guaranteed to remain available; keep additional active tools minimal."
             )
         if self.include_todo:
             instruction_lines.append(
@@ -476,6 +502,7 @@ class AgentLoopRunner:
     def _compose_active_tool_schemas(self, active_tool_names: set[str]) -> List[Dict[str, Any]]:
         if not self.hot_swap_tools:
             return self.tool_schemas
+        active_tool_names = set(active_tool_names) | self.base_tool_names
         active = [
             schema
             for schema in self.tool_schemas
@@ -520,9 +547,14 @@ class AgentLoopRunner:
                 names = [names]
             if not isinstance(names, list) or not names:
                 return "Error: deactivate_tools requires non-empty names[]"
+            protected = []
             for name in names:
-                active_tool_names.discard(str(name).strip())
-            return self._render_active_tool_state(active_tool_names, [])
+                normalized = str(name).strip()
+                if normalized in self.base_tool_names:
+                    protected.append(normalized)
+                    continue
+                active_tool_names.discard(normalized)
+            return self._render_active_tool_state(active_tool_names, protected)
 
         if tool_name == "list_active_tools":
             return self._render_active_tool_state(active_tool_names, [])
@@ -534,6 +566,7 @@ class AgentLoopRunner:
         candidates: List[tuple[int, str, str]] = []
         norm_query = query.strip().lower()
         tokens = re.findall(r"[a-z0-9_\\-]+", norm_query)
+        alias_tokens = self._expand_search_alias_tokens(tokens)
         for name, schema in self.tool_schema_by_name.items():
             desc = schema.get("function", {}).get("description", "")
             hay_name = name.lower()
@@ -551,6 +584,11 @@ class AgentLoopRunner:
                         score += 3
                     elif token in hay_desc:
                         score += 1
+                for token in alias_tokens:
+                    if token in hay_name:
+                        score += 5
+                    elif token in hay_desc:
+                        score += 2
             if score > 0:
                 candidates.append((score, name, str(desc)))
 
@@ -568,14 +606,36 @@ class AgentLoopRunner:
             marker = " [active]" if name in active_tool_names else ""
             lines.append(f"- {name}{marker}: {desc}")
         lines.append("Use activate_tools with names[] to enable selected tools.")
-        lines.append(f"Currently active: {', '.join(sorted(active_tool_names)) or '(none)'}")
+        lines.append(f"Currently active: {', '.join(sorted(set(active_tool_names) | self.base_tool_names)) or '(none)'}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _expand_search_alias_tokens(tokens: List[str]) -> List[str]:
+        alias_map = {
+            "git": ["bash", "read_file"],
+            "commit": ["bash"],
+            "branch": ["bash"],
+            "diff": ["bash"],
+            "repo": ["bash", "read_file"],
+            "repository": ["bash", "read_file"],
+            "shell": ["bash"],
+            "terminal": ["bash"],
+            "command": ["bash"],
+            "commands": ["bash"],
+            "file": ["read_file"],
+            "files": ["read_file", "bash"],
+            "filesystem": ["read_file", "bash"],
+        }
+        expanded: List[str] = []
+        for token in tokens:
+            expanded.extend(alias_map.get(token, []))
+        return expanded
+
     def _render_active_tool_state(self, active_tool_names: set[str], missing: List[str]) -> str:
-        active_sorted = sorted(active_tool_names)
+        active_sorted = sorted(set(active_tool_names) | self.base_tool_names)
         lines = [f"Active tools ({len(active_sorted)}): {', '.join(active_sorted) if active_sorted else '(none)'}"]
         if missing:
-            lines.append(f"Ignored unknown tools: {', '.join(sorted(set(missing)))}")
+            lines.append(f"Ignored protected/unknown tools: {', '.join(sorted(set(missing)))}")
         return "\n".join(lines)
 
     @staticmethod

@@ -520,6 +520,8 @@ class AgentLoopRunnerTests(unittest.TestCase):
         payload = model.client.chat.completions.request_payloads[0]
         names = [item["function"]["name"] for item in payload.get("tools") or []]
         self.assertIn("search_tools", names)
+        self.assertIn("bash", names)
+        self.assertIn("read_file", names)
         self.assertNotIn("write_file", names)
         self.assertEqual(payload.get("tool_choice"), "auto")
 
@@ -538,8 +540,50 @@ class AgentLoopRunnerTests(unittest.TestCase):
         payload = model.client.chat.completions.request_payloads[0]
         names = [item["function"]["name"] for item in payload.get("tools") or []]
         self.assertIn("search_tools", names)
+        self.assertIn("bash", names)
+        self.assertIn("read_file", names)
         self.assertNotIn("write_file", names)
         self.assertEqual(payload.get("tool_choice"), "auto")
+
+    def test_search_tools_aliases_git_to_bash(self):
+        model = FakeModel([make_response("done", tool_calls=None)])
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=4, hot_swap_tools=True)
+
+        rendered = runner._search_tools("git commit history", limit=5, active_tool_names={"bash", "read_file"})
+
+        self.assertIn("bash", rendered)
+
+    def test_deactivate_tools_keeps_base_tools_active(self):
+        model = FakeModel([make_response("done", tool_calls=None)])
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=4, hot_swap_tools=True)
+
+        rendered = runner._execute_hot_swap_tool(
+            "deactivate_tools",
+            {"names": ["bash", "read_file"]},
+            {"bash", "read_file", "write_file"},
+        )
+
+        self.assertIn("bash", rendered)
+        self.assertIn("read_file", rendered)
+        self.assertIn("Ignored protected/unknown tools", rendered)
+
+    def test_repo_inspection_subagent_prompt_biases_toward_bash(self):
+        model = FakeModel([make_response("subagent summary")])
+        runner = AgentLoopRunner(model=model, tool_executor=AgentToolExecutor(), max_rounds=16, hot_swap_tools=True)
+
+        summary = runner._run_subagent("Check git commit history for this repository", agent_type="Explore")
+
+        self.assertEqual(summary, "subagent summary")
+        payload = model.client.chat.completions.request_payloads[0]
+        self.assertEqual(payload.get("tool_choice"), "auto")
+        tool_names = [item["function"]["name"] for item in payload.get("tools") or []]
+        self.assertIn("bash", tool_names)
+        self.assertIn("read_file", tool_names)
+        self.assertIn("search_tools", tool_names)
+        self.assertGreaterEqual(runner.max_rounds, 16)
+        messages = payload["messages"]
+        self.assertTrue(any("git history" in str(message.get("content", "")).lower() for message in messages))
+        self.assertTrue(any("bash and read_file are always available base tools" in str(message.get("content", "")) for message in messages))
 
     def test_hot_swap_can_activate_write_tools_via_meta_tools(self):
         tool_calls_round_1 = [
@@ -578,6 +622,8 @@ class AgentLoopRunnerTests(unittest.TestCase):
         first_payload_tools = model.client.chat.completions.request_payloads[0].get("tools") or []
         first_names = [item["function"]["name"] for item in first_payload_tools]
         self.assertIn("search_tools", first_names)
+        self.assertIn("bash", first_names)
+        self.assertIn("read_file", first_names)
         self.assertNotIn("write_file", first_names)
 
         second_payload_tools = model.client.chat.completions.request_payloads[1].get("tools") or []
