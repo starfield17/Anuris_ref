@@ -98,6 +98,23 @@ class AgentToolsTests(unittest.TestCase):
                 ]
             )
 
+    def test_executor_initializes_todo_manager_by_default(self):
+        executor = AgentToolExecutor(include_todo=True)
+
+        rendered = executor.execute(
+            "TodoWrite",
+            {
+                "items": [
+                    {"content": "Plan", "status": "in_progress", "activeForm": "Planning"},
+                    {"content": "Ship", "status": "pending", "activeForm": "Shipping"},
+                ]
+            },
+        )
+
+        self.assertIn("[>] Plan <- Planning", rendered)
+        self.assertEqual(executor.get_todo_snapshot(), rendered)
+        self.assertNotIn("unavailable", rendered.lower())
+
     def test_build_tool_schemas_respects_flags(self):
         schemas = build_tool_schemas(
             include_write_edit=False,

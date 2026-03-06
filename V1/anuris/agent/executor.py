@@ -37,6 +37,8 @@ class AgentToolExecutor:
         self.skill_loader = skill_loader if include_skill_loading else None
         self.background_manager = background_manager if include_background_tasks else None
         self.team_manager = team_manager if include_team_ops else None
+        if include_todo and self.todo_manager is None:
+            self.todo_manager = TodoManager()
         if include_task_board and self.task_manager is None:
             self.task_manager = PersistentTaskManager(self.workspace_root / ".anuris_tasks")
         if include_skill_loading and self.skill_loader is None:

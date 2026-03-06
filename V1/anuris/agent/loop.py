@@ -190,7 +190,7 @@ class AgentLoopRunner:
             if self.include_compaction:
                 self.compactor.micro_compact(api_messages)
                 if self.compactor.should_auto_compact(api_messages):
-                    api_messages = self.compactor.auto_compact(api_messages)
+                    api_messages = self._auto_compact_preserving_active_request(api_messages)
                     if progress_callback:
                         progress_callback("[agent] context auto-compacted")
                     if event_callback:
@@ -338,6 +338,23 @@ class AgentLoopRunner:
     def compact_messages(self, messages: List[Dict[str, Any]], focus: Optional[str] = None) -> List[Dict[str, Any]]:
         """Manually compact a message list and return the new conversation skeleton."""
         return self.compactor.auto_compact(messages, focus=focus)
+
+    def _auto_compact_preserving_active_request(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        user_indices = [index for index, message in enumerate(messages) if message.get("role") == "user"]
+        if not user_indices:
+            return self.compactor.auto_compact(messages)
+
+        active_start = user_indices[-1]
+        if active_start <= 1:
+            return messages
+
+        prefix = messages[:active_start]
+        suffix = messages[active_start:]
+        if len(prefix) <= 1:
+            return messages
+
+        compacted_prefix = self.compactor.auto_compact(prefix)
+        return compacted_prefix + suffix
 
     def _run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
         """Run a fresh-context subagent and return only its final summary."""

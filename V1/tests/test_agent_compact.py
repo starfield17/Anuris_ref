@@ -113,6 +113,34 @@ class ContextCompactorTests(unittest.TestCase):
             self.assertEqual(len(model.client.chat.completions.calls), 2)
             second_call_messages = model.client.chat.completions.calls[1]["messages"]
             self.assertTrue(any("Conversation compacted" in str(message.get("content")) for message in second_call_messages))
+            self.assertTrue(any(message.get("role") == "user" and "hello world" in str(message.get("content")) for message in second_call_messages))
+
+    def test_auto_compact_preserves_active_request_suffix(self):
+        model = FakeModel([make_response("history summary")])
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            runner = AgentLoopRunner(
+                model=model,
+                tool_executor=AgentToolExecutor(workspace_root=workspace),
+                compaction_threshold_tokens=1,
+                include_compaction=True,
+                max_rounds=3,
+            )
+            messages = [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "older request"},
+                {"role": "assistant", "content": "older reply"},
+                {"role": "user", "content": "current request"},
+                {"role": "assistant", "content": "tool planning"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "tool output"},
+            ]
+
+            compacted = runner._auto_compact_preserving_active_request(messages)
+
+            self.assertEqual(compacted[-3]["content"], "current request")
+            self.assertEqual(compacted[-2]["content"], "tool planning")
+            self.assertEqual(compacted[-1]["content"], "tool output")
+            self.assertTrue(any("Conversation compacted" in str(message.get("content")) for message in compacted))
 
 
 if __name__ == "__main__":
