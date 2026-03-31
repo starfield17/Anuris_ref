@@ -1,28 +1,31 @@
 # Anuris_ref
 
-A command-line interface (CLI) tool for interacting with AI models through the Anuris framework.  
-It provides a state-driven chat experience with support for configurable prompts, attachments, chat history, and proxy settings.  
+Anuris is a terminal AI coding assistant with a Python runtime that now follows
+a Claude Code inspired architecture: a unified query engine, registry-backed
+tools, registry-backed slash commands, session transcripts, and explicit
+permission contexts.
 
 ## Features
 
-- **Interactive Chat**  
-  Conversational interface powered by the OpenAI API with streaming responses.
+- **Unified Query Engine**
+  One model turn loop handles both plain chat and tool-using agent behavior.
 
-- **Configurable System Prompt**  
-  Load custom prompts from file or inline to tailor assistant behavior.
+- **Tool Registry**
+  Built-in model-facing tools include shell, file read/write/edit, glob, grep,
+  todo/task boards, skill loading, and bounded subagents.
 
-- **Attachment Support**  
-  Attach images, documents, or text files to enrich conversations.  
-  Supported formats: `.jpg`, `.png`, `.pdf`, `.docx`, `.txt`, `.csv`, etc. (max 20MB per file).
+- **Command Palette**
+  Slash commands are now registry-backed instead of hardcoded branching logic.
 
-- **Chat History**  
-  Save, load, and clear chat sessions (including attachments and reasoning traces).
+- **Session Persistence**
+  Sessions can be saved, loaded, compacted, and replayed from written
+  transcripts under `.anuris/sessions/`.
 
-- **State Machine Design**  
-  The application flow is managed using a finite state machine for clarity and robustness.
+- **Attachment Support**
+  Attach images, documents, or text files to enrich requests.
 
-- **Customization**  
-  Configure API key, model, base URL, proxy, and temperature via CLI or saved configuration file.
+- **Provider-aware Config**
+  Configure API key, model, base URL, proxy, temperature, and reasoning mode.
 
 ## Installation
 
@@ -53,7 +56,8 @@ Run the CLI:
 python Anuris_rebuild.py --api-key <YOUR_API_KEY> --model <MODEL_NAME>
 ```
 
-Agent mode is enabled by default at startup. Use `/agent off` to switch back to standard chat mode.
+Tool mode is enabled by default. Use `/agent off` to temporarily disable
+model-facing tools and keep the session in plain completion mode.
 
 ### Headless Debug Server
 
@@ -76,47 +80,24 @@ Key routes:
 
 Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 
-### Regression Harness
-
-Run deterministic regression cases against the local debug server:
-
-```bash
-cd V1
-python -m anuris.regression --case agent_status
-```
-
-Defaults:
-
-* Cases directory: `V1/regression_cases/`
-* Reports directory: `V1/.anuris_regression_runs/`
-
-Useful flags:
-
-* `--server-url http://127.0.0.1:8765`
-* `--cases-dir <dir>`
-* `--case <name>`
-* `--output-dir <dir>`
-* `--fail-fast`
-
 ### Commands
 
-* `/clear` – Clear chat history and attachments
-* `/save [filename]` – Save chat history to a file
-* `/load [filename]` – Load chat history from a file
-* `/attach <file>` – Attach one or more files
-* `/detach [index]` – Remove attachments
-* `/files` – List current attachments
-* `/help` – Show help and available commands
-* `/agent [on|off|status]` – Toggle agent tool loop mode
-* `/todos` – Show in-memory TodoWrite board
-* `/tasks` – Show persistent task board (`.anuris_tasks/`)
-* `/skills` – Show discovered skills (`.anuris_skills/`, `skills/`)
-* `/compact [focus]` – Compact long chat history into summary context (`.anuris_transcripts/`)
-* `/background [task_id]` or `/bg [task_id]` – Inspect background tasks in agent mode
-* `/team` – Show teammate roster and statuses (`.anuris_team/config.json`)
-* `/inbox [name]` – Read and drain lead or teammate inbox (`.anuris_team/inbox/`)
-* `/plans` – Show tracked plan approval requests
-* `/shutdowns` – Show tracked shutdown requests
+* `/help`
+* `/clear`
+* `/save [filename]`
+* `/load [filename]`
+* `/attach <glob...>`
+* `/detach [index]`
+* `/files`
+* `/agent [on|off|status]`
+* `/compact [focus]`
+* `/todos`
+* `/tasks`
+* `/skills`
+* `/status`
+* `/model [name]`
+* `/config`
+* `/agents`
 
 ### Keyboard Shortcuts
 
@@ -130,3 +111,12 @@ Useful flags:
 
 Configuration is stored in `~/.anuris_config.toml`.
 Run with `--save-config` to persist current options.
+
+## Tests
+
+Run the current unit suite with:
+
+```bash
+cd V1
+python -m unittest discover -s tests -v
+```
