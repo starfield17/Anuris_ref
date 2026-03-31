@@ -141,20 +141,20 @@ class ChatUI:
     def display_welcome(self, model: str) -> None:
         """Display welcome message with attachment info."""
         welcome_text = f"""
-            [cyan]Anuris_API_CLI[/cyan] (Model: [green]{model}[/green])
+            [cyan]Anuris[/cyan] (Model: [green]{model}[/green])
 
             [yellow]Enter 'q' or 'exit' or 'quit' to quit[/yellow]
 
             [bold magenta]Commands:[/bold magenta]
-            [blue]- /clear[/blue]    : Clear chat history
-            [blue]- /save[/blue]     : Save chat history
-            [blue]- /load[/blue]     : Load chat history
-            [blue]- /attach[/blue]   : Attach file(s)
-            [blue]- /detach[/blue]   : Remove attachment(s)
-            [blue]- /files[/blue]    : List attachments
-            [blue]- /agent[/blue]    : Toggle agent mode
-            [blue]- /todos[/blue]    : Show todo board
-            [blue]- /help[/blue]     : Show help
+            [blue]- /help[/blue]     : Show command palette
+            [blue]- /status[/blue]   : Show runtime status
+            [blue]- /model[/blue]    : Show or change model
+            [blue]- /attach[/blue]   : Queue attachment(s)
+            [blue]- /files[/blue]    : List queued attachments
+            [blue]- /agent[/blue]    : Toggle tool mode
+            [blue]- /compact[/blue]  : Compact old context
+            [blue]- /tasks[/blue]    : Show persistent tasks
+            [blue]- /skills[/blue]   : Show discovered skills
 
             [bold magenta]Shortcuts:[/bold magenta]
             [green]- Enter[/green]: Send message
