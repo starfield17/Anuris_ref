@@ -7,6 +7,7 @@ from anuris.engine import PermissionContext, QueryEngine, SessionServices, Sessi
 from anuris.agent.skills import SkillLoader
 from anuris.agent.tasks import PersistentTaskManager
 from anuris.agent.todo import TodoManager
+from anuris.services import MCPManager, PermissionManager, PluginManager, SessionCatalog, SettingsManager, WorktreeManager
 from anuris.tools import ToolRegistry, build_default_tools
 
 
@@ -47,6 +48,12 @@ class QueryEngineTests(unittest.TestCase):
             todo_manager=TodoManager(),
             task_manager=PersistentTaskManager(self.workspace / ".anuris" / "tasks"),
             skill_loader=SkillLoader(self.workspace),
+            permission_manager=PermissionManager(),
+            session_catalog=SessionCatalog(self.workspace),
+            worktree_manager=WorktreeManager(self.workspace),
+            plugin_manager=PluginManager(self.workspace),
+            mcp_manager=MCPManager(self.workspace),
+            settings_manager=SettingsManager(),
         )
         self.tool_registry = ToolRegistry(build_default_tools())
         self.config = Config(api_key="k", model="fake-model", base_url="https://example.com/v1")
@@ -110,3 +117,49 @@ class QueryEngineTests(unittest.TestCase):
         self.assertIn("Conversation compacted", summary)
         self.assertEqual(store.messages[1].kind, "compact_boundary")
 
+    def test_query_engine_supports_mcp_resource_tools(self):
+        mcp_file = self.workspace / "resource.txt"
+        mcp_file.write_text("resource body", encoding="utf-8")
+        self.services.mcp_manager.add_resource("docs", str(mcp_file))
+
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("list_mcp_resources", '{}', "call_list")]}}]},
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_mcp_resource", '{"name":"docs"}', "call_read")]}}]},
+                {"choices": [{"message": {"content": "Read the local MCP resource."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng4")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        result = engine.submit("Inspect the MCP catalog.")
+        self.assertEqual(result.final_text, "Read the local MCP resource.")
+        self.assertTrue(any(message.role == "tool" and "docs" in str(message.content) for message in store.messages))
+
+    def test_query_engine_tool_search_finds_matching_tools(self):
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("tool_search", '{"query":"mcp"}')]}}]},
+                {"choices": [{"message": {"content": "Use the MCP tools."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng5")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        result = engine.submit("Find the MCP-related tools.")
+        self.assertEqual(result.final_text, "Use the MCP tools.")
+        self.assertTrue(any(message.role == "tool" and "list_mcp_resources" in str(message.content) for message in store.messages))

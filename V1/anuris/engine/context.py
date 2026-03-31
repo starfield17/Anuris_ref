@@ -10,6 +10,8 @@ from ..agent.todo import TodoManager
 
 EventCallback = Callable[[Dict[str, Any]], None]
 SubagentRunner = Callable[[str, str, bool], str]
+WorkspaceSwitcher = Callable[[str], str]
+WorkspaceResetter = Callable[[], str]
 
 
 @dataclass
@@ -32,6 +34,12 @@ class SessionServices:
     todo_manager: TodoManager
     task_manager: PersistentTaskManager
     skill_loader: SkillLoader
+    permission_manager: Any
+    session_catalog: Any
+    worktree_manager: Any
+    plugin_manager: Any
+    mcp_manager: Any
+    settings_manager: Any
 
 
 @dataclass
@@ -44,6 +52,8 @@ class ToolUseContext:
     permission_context: PermissionContext
     emit_event: EventCallback
     run_subagent: SubagentRunner
+    switch_workspace: WorkspaceSwitcher
+    reset_workspace: WorkspaceResetter
     config: Any
     ui: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)

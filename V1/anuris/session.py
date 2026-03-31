@@ -14,6 +14,7 @@ from .config import Config
 from .engine import PermissionContext, QueryEngine, SessionServices, SessionStore
 from .model import ChatModel
 from .prompts import prompt_manager
+from .services import MCPManager, PermissionManager, PluginManager, SessionCatalog, SettingsManager, WorktreeManager
 from .tools import ToolRegistry, build_default_tools
 from .agent.skills import SkillLoader
 from .agent.tasks import PersistentTaskManager
@@ -113,7 +114,8 @@ class ChatSession:
     ):
         self.config = config
         self.ui = ui or HeadlessUI()
-        self.workspace_root = (workspace_root or Path.cwd()).resolve()
+        self.initial_workspace_root = (workspace_root or Path.cwd()).resolve()
+        self.workspace_root = self.initial_workspace_root
         self.model = model or ChatModel(config)
         self.event_callback = event_callback
         self.session_id = session_id or self._build_default_session_id()
@@ -124,11 +126,7 @@ class ChatSession:
         system_prompt = prompt_manager.resolve_prompt_source(config.system_prompt)
         self.session_store = SessionStore(system_prompt, self.workspace_root, self.session_id)
         self.history = self.session_store
-        self.services = SessionServices(
-            todo_manager=TodoManager(),
-            task_manager=PersistentTaskManager(self.workspace_root / ".anuris" / "tasks"),
-            skill_loader=SkillLoader(self.workspace_root),
-        )
+        self.services = self._build_services(self.workspace_root)
         self.tool_registry = ToolRegistry(build_default_tools())
         self.engine = QueryEngine(
             model=self.model,
@@ -139,6 +137,8 @@ class ChatSession:
             config=self.config,
             event_callback=self._on_engine_event,
             ui=self.ui,
+            switch_workspace=self.switch_workspace,
+            reset_workspace=self.reset_workspace,
         )
         self.command_dispatcher = CommandDispatcher(self)
 
@@ -216,7 +216,10 @@ class ChatSession:
         self.attachment_manager.clear_attachments()
 
         allowed_tool_names = None if self.agent_mode else set()
-        permission_context = PermissionContext(mode="default", allowed_tools=allowed_tool_names)
+        permission_context = self.services.permission_manager.create_context(
+            agent_mode=self.agent_mode,
+            explicit_allowed_tools=allowed_tool_names,
+        )
         result = self.engine.submit(
             user_input,
             attachments=attachments,
@@ -278,6 +281,48 @@ class ChatSession:
         if hasattr(self.ui, "consume_output"):
             return self.ui.consume_output()
         return ""
+
+    def switch_workspace(self, raw_path: str) -> str:
+        target = self.services.worktree_manager.resolve_target(raw_path)
+        self.workspace_root = target
+        self._refresh_workspace_services()
+        return f"Switched workspace to {self.workspace_root}"
+
+    def reset_workspace(self) -> str:
+        self.workspace_root = self.initial_workspace_root
+        self._refresh_workspace_services()
+        return f"Returned to primary workspace {self.workspace_root}"
+
+    def _refresh_workspace_services(self) -> None:
+        previous_permission_mode = self.services.permission_manager.mode
+        previous_settings = self.services.settings_manager.runtime
+        self.services = self._build_services(self.workspace_root)
+        self.services.permission_manager.set_mode(previous_permission_mode)
+        self.services.settings_manager.runtime = previous_settings
+        self.session_store.retarget_workspace(self.workspace_root)
+        self.engine.services = self.services
+        self.engine.workspace_root = self.workspace_root
+        self.tool_registry = ToolRegistry(build_default_tools())
+        self.engine.tool_registry = self.tool_registry
+
+    def _build_services(self, workspace_root: Path) -> SessionServices:
+        plugin_manager = PluginManager(workspace_root)
+        skill_dirs = [
+            workspace_root / ".anuris_skills",
+            workspace_root / "skills",
+            *plugin_manager.skill_dirs(),
+        ]
+        return SessionServices(
+            todo_manager=TodoManager(),
+            task_manager=PersistentTaskManager(workspace_root / ".anuris" / "tasks"),
+            skill_loader=SkillLoader(workspace_root, skills_dirs=skill_dirs),
+            permission_manager=PermissionManager(),
+            session_catalog=SessionCatalog(workspace_root),
+            worktree_manager=WorktreeManager(workspace_root),
+            plugin_manager=plugin_manager,
+            mcp_manager=MCPManager(workspace_root),
+            settings_manager=SettingsManager(),
+        )
 
     def _next_request_id(self) -> str:
         self.request_counter += 1

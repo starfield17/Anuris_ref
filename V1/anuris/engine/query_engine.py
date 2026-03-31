@@ -25,6 +25,8 @@ class QueryEngine:
         config: Any,
         event_callback: Optional[Any] = None,
         ui: Any = None,
+        switch_workspace: Optional[Any] = None,
+        reset_workspace: Optional[Any] = None,
         max_turns: int = 12,
         auto_compact_chars: int = 18000,
     ):
@@ -36,6 +38,8 @@ class QueryEngine:
         self.config = config
         self.event_callback = event_callback
         self.ui = ui
+        self.switch_workspace = switch_workspace or (lambda path: f"workspace switching unavailable: {path}")
+        self.reset_workspace = reset_workspace or (lambda: "workspace reset unavailable")
         self.max_turns = max_turns
         self.auto_compact_chars = auto_compact_chars
 
@@ -143,6 +147,8 @@ class QueryEngine:
             config=self.config,
             event_callback=self.event_callback,
             ui=None,
+            switch_workspace=self.switch_workspace,
+            reset_workspace=self.reset_workspace,
             max_turns=max(4, self.max_turns // 2),
             auto_compact_chars=self.auto_compact_chars,
         )
@@ -155,6 +161,9 @@ class QueryEngine:
             "todo_write",
             "task_get",
             "task_list",
+            "tool_search",
+            "list_mcp_resources",
+            "read_mcp_resource",
         }
         if not readonly:
             allowed_tool_names |= {"write_file", "edit_file", "task_create", "task_update"}
@@ -181,9 +190,14 @@ class QueryEngine:
             permission_context=permission_context,
             emit_event=self._emit,
             run_subagent=self.run_subagent,
+            switch_workspace=self.switch_workspace,
+            reset_workspace=self.reset_workspace,
             config=self.config,
             ui=self.ui,
-            metadata={"allowed_tool_names": allowed_tool_names},
+            metadata={
+                "allowed_tool_names": allowed_tool_names,
+                "tool_registry": getattr(self.tool_registry, "tools", []),
+            },
         )
 
     def _maybe_auto_compact(self) -> None:

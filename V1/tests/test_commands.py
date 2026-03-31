@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,3 +69,63 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertIn("disabled", response.output_text)
         self.assertFalse(self.session.agent_mode)
 
+    def test_permissions_and_rewind_commands(self):
+        self.session.session_store.add_user_message("first")
+        self.session.session_store.add_assistant_message("reply")
+        self.session.session_store.add_user_message("second")
+        self.session.session_store.add_assistant_message("reply2")
+
+        response = self.session.handle_input("/permissions readonly")
+        self.assertIn("readonly", response.output_text)
+        self.assertEqual(self.session.services.permission_manager.mode, "readonly")
+
+        response = self.session.handle_input("/rewind 1")
+        self.assertIn("Rewound", response.output_text)
+        self.assertEqual([message.content for message in self.session.session_store.messages if message.role == "user"], ["first"])
+
+    def test_resume_command_loads_saved_session_snapshot(self):
+        other = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="saved123",
+        )
+        other.session_store.add_user_message("restored user")
+        other.session_store.add_assistant_message("restored assistant")
+
+        self.session.handle_input("/clear")
+        response = self.session.handle_input("/resume saved123")
+        self.assertIn("saved123", response.output_text)
+        self.assertTrue(any(message.content == "restored assistant" for message in self.session.session_store.messages))
+
+    def test_mcp_plugin_and_worktree_commands(self):
+        docs_path = self.workspace / "docs.txt"
+        docs_path.write_text("mcp body", encoding="utf-8")
+        plugin_dir = self.workspace / ".anuris" / "plugins" / "demo-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps({"name": "demo-plugin", "version": "1.0.0", "description": "demo"}),
+            encoding="utf-8",
+        )
+
+        response = self.session.handle_input(f"/mcp add-resource docs {docs_path}")
+        self.assertIn("Added MCP resource docs", response.output_text)
+
+        response = self.session.handle_input("/mcp list")
+        self.assertIn("docs", response.output_text)
+
+        response = self.session.handle_input("/plugin reload")
+        self.assertIn("reloaded", response.output_text.lower())
+
+        response = self.session.handle_input("/plugin list")
+        self.assertIn("demo-plugin", response.output_text)
+
+        alt_workspace = self.workspace / "alt"
+        alt_workspace.mkdir()
+        response = self.session.handle_input(f"/worktree enter {alt_workspace}")
+        self.assertIn(str(alt_workspace), response.output_text)
+        self.assertEqual(self.session.workspace_root, alt_workspace.resolve())
+
+        response = self.session.handle_input("/worktree exit")
+        self.assertIn(str(self.workspace), response.output_text)
+        self.assertEqual(self.session.workspace_root, self.workspace.resolve())

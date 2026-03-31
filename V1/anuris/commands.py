@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import glob
 import os
+import shlex
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from rich.panel import Panel
@@ -41,6 +44,19 @@ class CommandDispatcher:
         self._register("model", "Show or update the active model name.", "/model [name]", self._handle_model)
         self._register("config", "Show the current runtime config.", "/config", self._handle_config)
         self._register("agents", "Show subagent capability status.", "/agents", self._handle_agents)
+        self._register("permissions", "Show or update the active permission mode.", "/permissions [mode]", self._handle_permissions)
+        self._register("session", "Inspect current session or list saved sessions.", "/session [show|list]", self._handle_session)
+        self._register("resume", "Resume a stored session by id or latest.", "/resume [session_id]", self._handle_resume)
+        self._register("rewind", "Rewind one or more recent conversation turns.", "/rewind [turns]", self._handle_rewind)
+        self._register("mcp", "Inspect or modify local MCP resources.", "/mcp <servers|list|add-resource|read>", self._handle_mcp)
+        self._register("plugin", "Inspect discovered local plugins.", "/plugin [list|reload]", self._handle_plugin)
+        self._register("reload-plugins", "Reload plugin discovery and skill paths.", "/reload-plugins", self._handle_reload_plugins)
+        self._register("worktree", "Inspect or switch worktrees.", "/worktree <list|enter|exit>", self._handle_worktree)
+        self._register("branch", "Show the current git branch.", "/branch", self._handle_branch)
+        self._register("env", "Show environment and runtime details.", "/env", self._handle_env)
+        self._register("output-style", "Show or set the output style.", "/output-style [plain|rich]", self._handle_output_style)
+        self._register("theme", "Show or set the current theme name.", "/theme [name]", self._handle_theme)
+        self._register("vim", "Enable or disable vim mode flag.", "/vim [on|off|status]", self._handle_vim)
 
         if extra_handlers:
             for name, handler in extra_handlers.items():
@@ -173,6 +189,7 @@ class CommandDispatcher:
             f"Base URL: {self.session.config.base_url}",
             f"Workspace: {self.session.workspace_root}",
             f"Tool mode: {'on' if self.session.agent_mode else 'off'}",
+            f"Permission mode: {self.session.services.permission_manager.mode}",
             f"Tools: {active_tools}",
         ]
         self.ui.display_message(Panel.fit("\n".join(lines), border_style="cyan"))
@@ -200,4 +217,162 @@ class CommandDispatcher:
             "Subagent tool is available through the model-facing `task` tool. "
             "Readonly subagents expose bash/read/search/skill/task read APIs by default.",
             style="cyan",
+        )
+
+    def _handle_permissions(self, args: str) -> None:
+        requested = args.strip()
+        if not requested:
+            self.ui.display_message(self.session.services.permission_manager.render(), style="cyan")
+            return
+        mode = self.session.services.permission_manager.set_mode(requested)
+        self.ui.display_message(f"Permission mode set to {mode}", style="green")
+
+    def _handle_session(self, args: str) -> None:
+        action = (args.strip().lower() or "show")
+        if action == "show":
+            self.ui.display_message(Panel.fit(self.session.session_store.describe(), border_style="cyan"))
+            return
+        if action == "list":
+            self.ui.display_message(self.session.services.session_catalog.render(), style="cyan")
+            return
+        self.ui.display_message("Usage: /session [show|list]", style="yellow")
+
+    def _handle_resume(self, args: str) -> None:
+        session_id = args.strip() or self.session.services.session_catalog.latest_session_id()
+        snapshot = self.session.services.session_catalog.snapshot_path(session_id)
+        self.session.session_store.load_snapshot_path(snapshot)
+        self.ui.display_message(f"Resumed session {session_id}", style="green")
+
+    def _handle_rewind(self, args: str) -> None:
+        turns = int(args.strip() or "1")
+        removed = self.session.session_store.rewind_turns(turns)
+        self.ui.display_message(f"Rewound {removed} message(s).", style="yellow")
+
+    def _handle_mcp(self, args: str) -> None:
+        parts = shlex.split(args)
+        action = parts[0] if parts else "list"
+        if action == "servers":
+            self.ui.display_message(self.session.services.mcp_manager.render_servers(), style="cyan")
+            return
+        if action == "list":
+            server = parts[1] if len(parts) > 1 else None
+            self.ui.display_message(self.session.services.mcp_manager.render_resources(server), style="cyan")
+            return
+        if action == "add-resource":
+            if len(parts) < 3:
+                self.ui.display_message("Usage: /mcp add-resource <name> <path> [description]", style="yellow")
+                return
+            description = " ".join(parts[3:]) if len(parts) > 3 else ""
+            resource = self.session.services.mcp_manager.add_resource(parts[1], parts[2], description=description)
+            self.ui.display_message(f"Added MCP resource {resource['name']}", style="green")
+            return
+        if action == "read":
+            if len(parts) < 2:
+                self.ui.display_message("Usage: /mcp read <name>", style="yellow")
+                return
+            content = self.session.services.mcp_manager.read_resource(parts[1])
+            self.ui.display_message(content, style="cyan")
+            return
+        self.ui.display_message("Usage: /mcp <servers|list|add-resource|read>", style="yellow")
+
+    def _handle_plugin(self, args: str) -> None:
+        action = (args.strip().lower() or "list")
+        if action == "list":
+            self.ui.display_message(self.session.services.plugin_manager.render(), style="cyan")
+            return
+        if action == "reload":
+            self._reload_plugins()
+            self.ui.display_message("Plugins reloaded.", style="green")
+            return
+        self.ui.display_message("Usage: /plugin [list|reload]", style="yellow")
+
+    def _handle_reload_plugins(self, args: str) -> None:
+        del args
+        self._reload_plugins()
+        self.ui.display_message("Plugins reloaded.", style="green")
+
+    def _handle_worktree(self, args: str) -> None:
+        parts = shlex.split(args)
+        action = parts[0] if parts else "list"
+        if action == "list":
+            self.ui.display_message(self.session.services.worktree_manager.render(), style="cyan")
+            return
+        if action == "enter":
+            if len(parts) < 2:
+                self.ui.display_message("Usage: /worktree enter <path>", style="yellow")
+                return
+            self.ui.display_message(self.session.switch_workspace(parts[1]), style="green")
+            return
+        if action == "exit":
+            self.ui.display_message(self.session.reset_workspace(), style="green")
+            return
+        self.ui.display_message("Usage: /worktree <list|enter|exit>", style="yellow")
+
+    def _handle_branch(self, args: str) -> None:
+        del args
+        try:
+            completed = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=self.session.workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
+            branch = completed.stdout.strip()
+        except Exception:
+            branch = "(not a git repository)"
+        self.ui.display_message(f"branch: {branch}", style="cyan")
+
+    def _handle_env(self, args: str) -> None:
+        del args
+        lines = [
+            f"workspace: {self.session.workspace_root}",
+            f"home_workspace: {self.session.initial_workspace_root}",
+            f"session_id: {self.session.session_id}",
+            f"python: {os.environ.get('PYTHONPATH', '') or '(default)'}",
+        ]
+        self.ui.display_message(Panel.fit("\n".join(lines), border_style="blue"))
+
+    def _handle_output_style(self, args: str) -> None:
+        requested = args.strip()
+        if not requested:
+            self.ui.display_message(
+                f"output_style: {self.session.services.settings_manager.runtime.output_style}",
+                style="cyan",
+            )
+            return
+        style = self.session.services.settings_manager.set_output_style(requested)
+        self.ui.display_message(f"Output style set to {style}", style="green")
+
+    def _handle_theme(self, args: str) -> None:
+        requested = args.strip()
+        if not requested:
+            self.ui.display_message(f"theme: {self.session.services.settings_manager.runtime.theme}", style="cyan")
+            return
+        theme = self.session.services.settings_manager.set_theme(requested)
+        self.ui.display_message(f"Theme set to {theme}", style="green")
+
+    def _handle_vim(self, args: str) -> None:
+        action = (args.strip().lower() or "status")
+        if action == "status":
+            state = self.session.services.settings_manager.runtime.vim_mode
+            self.ui.display_message(f"vim_mode: {state}", style="cyan")
+            return
+        if action in {"on", "off"}:
+            state = self.session.services.settings_manager.set_vim_mode(action == "on")
+            self.ui.display_message(f"vim_mode: {state}", style="green")
+            return
+        self.ui.display_message("Usage: /vim [on|off|status]", style="yellow")
+
+    def _reload_plugins(self) -> None:
+        self.session.services.plugin_manager.reload(self.session.workspace_root)
+        skill_dirs = [
+            self.session.workspace_root / ".anuris_skills",
+            self.session.workspace_root / "skills",
+            *self.session.services.plugin_manager.skill_dirs(),
+        ]
+        self.session.services.skill_loader = type(self.session.services.skill_loader)(
+            self.session.workspace_root,
+            skills_dirs=skill_dirs,
         )

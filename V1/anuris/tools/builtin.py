@@ -373,6 +373,99 @@ class SkillTool(BaseTool):
         return ToolExecutionResult(model_content=body, summary="load_skill")
 
 
+class ToolSearchTool(BaseTool):
+    name = "tool_search"
+    description = "Search the active tool catalog by keyword."
+
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+            },
+            "required": ["query"],
+        }
+
+    def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
+        query = str(args.get("query", "")).strip().lower()
+        if not query:
+            raise ValueError("query is required")
+        matches = []
+        for tool in context.metadata.get("tool_registry", []):
+            haystack = f"{tool.name} {tool.description}".lower()
+            if query in haystack and tool.can_expose(context):
+                matches.append(f"- {tool.name}: {tool.description}")
+        rendered = "\n".join(matches) or "No matching tools."
+        return ToolExecutionResult(model_content=rendered, summary=f"tool_search {query}")
+
+
+class ListMcpResourcesTool(BaseTool):
+    name = "list_mcp_resources"
+    description = "List configured local MCP resources."
+
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "server": {"type": "string"},
+            },
+        }
+
+    def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
+        rendered = context.services.mcp_manager.render_resources(args.get("server"))
+        return ToolExecutionResult(model_content=rendered, summary="list_mcp_resources")
+
+
+class ReadMcpResourceTool(BaseTool):
+    name = "read_mcp_resource"
+    description = "Read the content of a configured local MCP resource."
+
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "server": {"type": "string"},
+            },
+            "required": ["name"],
+        }
+
+    def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
+        content = context.services.mcp_manager.read_resource(str(args.get("name", "")), args.get("server"))
+        return ToolExecutionResult(model_content=content, summary=f"read_mcp_resource {args.get('name', '')}")
+
+
+class EnterWorktreeTool(BaseTool):
+    name = "enter_worktree"
+    description = "Switch the active workspace to another worktree or directory."
+
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+            },
+            "required": ["path"],
+        }
+
+    def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
+        message = context.switch_workspace(str(args.get("path", "")))
+        return ToolExecutionResult(model_content=message, summary="enter_worktree")
+
+
+class ExitWorktreeTool(BaseTool):
+    name = "exit_worktree"
+    description = "Return to the primary workspace root."
+
+    def input_schema(self) -> Dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
+        del args
+        message = context.reset_workspace()
+        return ToolExecutionResult(model_content=message, summary="exit_worktree")
+
+
 class AgentTaskTool(BaseTool):
     name = "task"
     description = "Delegate a bounded sub-task to a temporary subagent."
@@ -416,5 +509,10 @@ def build_default_tools() -> List[BaseTool]:
         TaskUpdateTool(),
         TaskListTool(),
         SkillTool(),
+        ToolSearchTool(),
+        ListMcpResourcesTool(),
+        ReadMcpResourceTool(),
+        EnterWorktreeTool(),
+        ExitWorktreeTool(),
         AgentTaskTool(),
     ]
