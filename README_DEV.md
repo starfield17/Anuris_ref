@@ -76,6 +76,11 @@ Current built-in tools:
 - `task_update`
 - `task_list`
 - `load_skill`
+- `tool_search`
+- `list_mcp_resources`
+- `read_mcp_resource`
+- `enter_worktree`
+- `exit_worktree`
 - `task`
 
 ### CommandDispatcher
@@ -98,6 +103,19 @@ Current slash commands:
 - `/model [name]`
 - `/config`
 - `/agents`
+- `/permissions [mode]`
+- `/session [show|list]`
+- `/resume [session_id]`
+- `/rewind [turns]`
+- `/mcp <servers|list|add-resource|read>`
+- `/plugin [list|reload]`
+- `/reload-plugins`
+- `/worktree <list|enter|exit>`
+- `/branch`
+- `/env`
+- `/output-style [plain|rich]`
+- `/theme [name]`
+- `/vim [on|off|status]`
 
 ## 4) Test Commands
 

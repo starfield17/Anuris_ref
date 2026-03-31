@@ -58,9 +58,16 @@ V1/
       messages.py        # normalized message + tool call types
       query_engine.py    # QueryEngine turn loop
       session_store.py   # transcript persistence + compaction
+    services/
+      permissions.py     # permission-mode manager
+      sessions.py        # session catalog / resume support
+      worktree.py        # worktree inspection and switching
+      plugins.py         # local plugin discovery
+      mcp.py             # local MCP resource catalog
+      settings.py        # runtime UI/output settings
     tools/
       base.py            # BaseTool + ToolExecutionResult
-      builtin.py         # bash/read/write/edit/glob/grep/task/skill tools
+      builtin.py         # bash/read/write/edit/glob/grep/task/skill/MCP/worktree tools
       registry.py        # active tool filtering + schema export
     agent/
       todo.py            # reused TodoManager
@@ -108,10 +115,11 @@ V1/
   - active tool filtering based on `PermissionContext`
   - provider-facing schema generation
 - `anuris/tools/builtin.py`
-  - shell, file, search, todo, task, skill, and subagent tools
+  - shell, file, search, todo, task, skill, MCP, worktree, tool-search, and subagent tools
 - `anuris/commands.py`
   - registry-backed slash commands
   - help, save/load, attach/detach, compact, status, model, tasks, skills
+  - permissions, session resume/rewind, MCP, plugins, worktrees, branch/env/output settings
 
 ## 5. Current Command Surface
 
@@ -133,6 +141,19 @@ Interactive commands:
 - `/model [name]`
 - `/config`
 - `/agents`
+- `/permissions [mode]`
+- `/session [show|list]`
+- `/resume [session_id]`
+- `/rewind [turns]`
+- `/mcp <servers|list|add-resource|read>`
+- `/plugin [list|reload]`
+- `/reload-plugins`
+- `/worktree <list|enter|exit>`
+- `/branch`
+- `/env`
+- `/output-style [plain|rich]`
+- `/theme [name]`
+- `/vim [on|off|status]`
 
 ## 6. Built-in Tools
 
@@ -150,6 +171,11 @@ The model-facing tool registry currently exposes:
 - `task_update`
 - `task_list`
 - `load_skill`
+- `tool_search`
+- `list_mcp_resources`
+- `read_mcp_resource`
+- `enter_worktree`
+- `exit_worktree`
 - `task` (spawn bounded subagent work)
 
 Readonly subagents are restricted to read/search/task-read tools by default.

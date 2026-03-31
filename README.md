@@ -98,6 +98,19 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/model [name]`
 * `/config`
 * `/agents`
+* `/permissions [mode]`
+* `/session [show|list]`
+* `/resume [session_id]`
+* `/rewind [turns]`
+* `/mcp <servers|list|add-resource|read>`
+* `/plugin [list|reload]`
+* `/reload-plugins`
+* `/worktree <list|enter|exit>`
+* `/branch`
+* `/env`
+* `/output-style [plain|rich]`
+* `/theme [name]`
+* `/vim [on|off|status]`
 
 ### Keyboard Shortcuts
 
