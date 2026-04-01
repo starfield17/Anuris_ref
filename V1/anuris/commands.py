@@ -9,7 +9,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from rich.panel import Panel
 
-from .command_specs import register_analysis_commands, register_event_commands, register_inspection_commands
+from .command_specs import (
+    register_analysis_commands,
+    register_event_commands,
+    register_inspection_commands,
+    register_session_ops_commands,
+)
 
 
 @dataclass
@@ -61,6 +66,7 @@ class CommandDispatcher:
         register_analysis_commands(self)
         register_event_commands(self)
         register_inspection_commands(self)
+        register_session_ops_commands(self)
 
         if extra_handlers:
             for name, handler in extra_handlers.items():

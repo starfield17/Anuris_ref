@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,7 @@ class SessionStore:
     def __init__(self, system_prompt: str, workspace_root: Path, session_id: str):
         self.workspace_root = Path(workspace_root).resolve()
         self.session_id = session_id
+        self.title: Optional[str] = None
         self.session_dir = self.workspace_root / ".anuris" / "sessions" / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.messages: List[ConversationMessage] = [
@@ -97,6 +99,7 @@ class SessionStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "session_id": self.session_id,
+            "title": self.title,
             "messages": [message.to_dict() for message in self.messages],
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -111,6 +114,7 @@ class SessionStore:
         if not messages or messages[0].role != "system":
             raise ValueError("Saved session is missing the system prompt message")
         self.messages = messages
+        self.title = _normalize_title(payload.get("title"))
         self.write_transcript()
         self._persist_snapshot()
         return path
@@ -162,6 +166,7 @@ class SessionStore:
         if not messages or messages[0].role != "system":
             raise ValueError("Saved session is missing the system prompt message")
         self.messages = messages
+        self.title = _normalize_title(payload.get("title"))
         self.write_transcript()
         self._persist_snapshot()
 
@@ -182,14 +187,14 @@ class SessionStore:
         return removed
 
     def describe(self) -> str:
-        return "\n".join(
-            [
-                f"session_id: {self.session_id}",
-                f"workspace_root: {self.workspace_root}",
-                f"message_count: {len(self.messages)}",
-                f"transcript_path: {self.session_dir / 'transcript.md'}",
-            ]
-        )
+        lines = [
+            f"session_id: {self.session_id}",
+            f"title: {self.title or '(untitled)'}",
+            f"workspace_root: {self.workspace_root}",
+            f"message_count: {len(self.messages)}",
+            f"transcript_path: {self.session_dir / 'transcript.md'}",
+        ]
+        return "\n".join(lines)
 
     def context_report(self) -> str:
         role_counts: dict[str, int] = {}
@@ -220,7 +225,7 @@ class SessionStore:
             return "No conversation history yet."
 
         lines = [
-            f"Session summary for {self.session_id}",
+            f"Session summary for {self.title or self.session_id}",
             "",
             f"Total messages: {len(self.messages)}",
             f"Approx context size: {self.approximate_size()} chars",
@@ -232,10 +237,58 @@ class SessionStore:
             lines.append(f"- {title}: {message.preview(180) or '(empty)'}")
         return "\n".join(lines)
 
+    def rename(self, title: str) -> str:
+        normalized = _normalize_title(title)
+        if not normalized:
+            raise ValueError("session title is required")
+        self.title = normalized
+        self.write_transcript()
+        self._persist_snapshot()
+        return normalized
+
+    def suggested_title(self, max_length: int = 50) -> str:
+        candidates = [
+            message.preview(500)
+            for message in self.messages
+            if message.role == "user" and message.kind == "message" and message.preview(500)
+        ]
+        if not candidates:
+            candidates = [
+                message.preview(500)
+                for message in self.messages
+                if message.role != "system" and message.preview(500)
+            ]
+        if not candidates:
+            return ""
+        text = re.sub(r"\s+", " ", candidates[0]).strip()
+        if len(text) <= max_length:
+            return text
+        return text[: max_length - 3].rstrip() + "..."
+
+    def export_text(self) -> str:
+        lines = [f"Session: {self.title or self.session_id}", f"Session ID: {self.session_id}", ""]
+        for message in self.messages:
+            title = f"{message.role.upper()} ({message.kind})" if message.kind != "message" else message.role.upper()
+            lines.append(title)
+            lines.append("-" * len(title))
+            content = message.preview(10000)
+            if content:
+                lines.append(content)
+            if message.reasoning:
+                lines.extend(["", "Reasoning:", message.reasoning])
+            if message.tool_calls:
+                lines.extend(["", "Tool Calls:"])
+                for tool_call in message.tool_calls:
+                    lines.append(f"- {tool_call.name} {tool_call.arguments_json}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
     def write_transcript(self) -> Path:
         transcript_path = self.session_dir / "transcript.md"
         lines = [
-            f"# Session {self.session_id}",
+            f"# Session {self.title or self.session_id}",
+            "",
+            f"- session_id: `{self.session_id}`",
             "",
         ]
         for message in self.messages:
@@ -260,7 +313,15 @@ class SessionStore:
         snapshot_path = self.session_dir / "session.json"
         payload = {
             "session_id": self.session_id,
+            "title": self.title,
             "messages": [message.to_dict() for message in self.messages],
         }
         snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return snapshot_path
+
+
+def _normalize_title(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

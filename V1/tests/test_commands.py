@@ -189,3 +189,23 @@ class CommandDispatcherTests(unittest.TestCase):
 
         response = self.session.handle_input("/memory clear")
         self.assertIn("cleared", response.output_text.lower())
+
+    def test_rename_and_export_commands(self):
+        self.session.session_store.add_user_message("Refactor the runtime session layer for Claude parity")
+        self.session.session_store.add_assistant_message("Starting with command and session metadata changes.")
+
+        response = self.session.handle_input("/rename")
+        self.assertIn("Session renamed to:", response.output_text)
+        self.assertIn("Refactor the runtime session layer", self.session.session_store.title)
+
+        response = self.session.handle_input("/session list")
+        self.assertIn("Refactor the runtime session layer", response.output_text)
+
+        response = self.session.handle_input("/export exported-session")
+        self.assertIn("exported-session.txt", response.output_text)
+        export_path = self.workspace / "exported-session.txt"
+        self.assertTrue(export_path.exists())
+        exported = export_path.read_text(encoding="utf-8")
+        self.assertIn("Session:", exported)
+        self.assertIn("Refactor the runtime session layer", exported)
+        self.assertIn("Starting with command and session metadata changes.", exported)

@@ -34,12 +34,15 @@ class SessionCatalog:
             try:
                 payload = json.loads(snapshot.read_text(encoding="utf-8"))
                 message_count = len(payload.get("messages", []))
+                title = str(payload.get("title", "") or "").strip()
             except Exception:
                 message_count = 0
+                title = ""
             updated_at = datetime.fromtimestamp(snapshot.stat().st_mtime).isoformat(timespec="seconds")
             entries.append(
                 {
                     "session_id": session_dir.name,
+                    "title": title,
                     "message_count": str(message_count),
                     "updated_at": updated_at,
                     "transcript_path": str(transcript),
@@ -65,6 +68,6 @@ class SessionCatalog:
         if not sessions:
             return "No saved sessions."
         return "\n".join(
-            f"- {item['session_id']} ({item['message_count']} messages, updated {item['updated_at']})"
+            f"- {item['session_id']} [{item['title'] or 'untitled'}] ({item['message_count']} messages, updated {item['updated_at']})"
             for item in sessions
         )
