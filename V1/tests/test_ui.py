@@ -8,8 +8,8 @@ from rich.console import Console
 from anuris.ui import ChatUI
 
 
-def _fake_session(output_style: str = "rich"):
-    settings_manager = SimpleNamespace(runtime=SimpleNamespace(output_style=output_style, theme="claude", vim_mode=True))
+def _fake_session(output_style: str = "rich", theme: str = "claude"):
+    settings_manager = SimpleNamespace(runtime=SimpleNamespace(output_style=output_style, theme=theme, vim_mode=True))
     return SimpleNamespace(
         config=SimpleNamespace(model="demo-model"),
         agent_mode=True,
@@ -25,11 +25,11 @@ def _fake_session(output_style: str = "rich"):
 
 
 class ChatUITests(unittest.TestCase):
-    def _build_ui(self, output_style: str = "rich"):
+    def _build_ui(self, output_style: str = "rich", theme: str = "claude"):
         ui = ChatUI()
         buffer = io.StringIO()
         ui.console = Console(file=buffer, force_terminal=False, color_system=None, width=120, record=True)
-        ui.bind_session(_fake_session(output_style=output_style))
+        ui.bind_session(_fake_session(output_style=output_style, theme=theme))
         return ui
 
     def test_welcome_and_statusline_render(self):
@@ -59,3 +59,13 @@ class ChatUITests(unittest.TestCase):
         plain_rendered = plain_ui.console.export_text()
         self.assertIn("Anuris (demo-model)", plain_rendered)
         self.assertIn("Plain assistant output.", plain_rendered)
+
+    def test_dark_theme_renders_same_ui_surface(self):
+        ui = self._build_ui(theme="dark")
+        ui.display_welcome("demo-model")
+        ui.display_status_line()
+        ui.display_assistant_message("Dark theme assistant output.")
+        rendered = ui.console.export_text()
+        self.assertIn("interactive session", rendered)
+        self.assertIn("model demo-model", rendered)
+        self.assertIn("Dark theme assistant output.", rendered)

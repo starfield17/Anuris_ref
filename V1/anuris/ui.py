@@ -56,6 +56,18 @@ _THEMES: dict[str, ThemePalette] = {
         reasoning="grey82",
         tool="bright_cyan",
     ),
+    "dark": ThemePalette(
+        border="rgb(84,84,84)",
+        accent="rgb(232,232,232)",
+        accent_soft="rgb(125,183,255)",
+        muted="grey70",
+        success="green3",
+        warning="yellow3",
+        danger="red3",
+        assistant="rgb(220,229,255)",
+        reasoning="grey84",
+        tool="rgb(116,214,255)",
+    ),
     "midnight": ThemePalette(
         border="rgb(60,76,110)",
         accent="rgb(225,236,255)",

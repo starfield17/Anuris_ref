@@ -72,6 +72,19 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertIn("disabled", response.output_text)
         self.assertFalse(self.session.agent_mode)
 
+    def test_theme_command_lists_and_switches_themes(self):
+        response = self.session.handle_input("/theme")
+        self.assertIn("theme: claude", response.output_text)
+        self.assertIn("dark", response.output_text)
+
+        response = self.session.handle_input("/theme dark")
+        self.assertIn("Theme set to dark", response.output_text)
+        self.assertEqual(self.session.services.settings_manager.runtime.theme, "dark")
+
+        response = self.session.handle_input("/theme toggle")
+        self.assertIn("Theme switched to claude", response.output_text)
+        self.assertEqual(self.session.services.settings_manager.runtime.theme, "claude")
+
     def test_permissions_and_rewind_commands(self):
         self.session.session_store.add_user_message("first")
         self.session.session_store.add_assistant_message("reply")

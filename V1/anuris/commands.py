@@ -360,7 +360,13 @@ class CommandDispatcher:
     def _handle_theme(self, args: str) -> None:
         requested = args.strip()
         if not requested:
-            self.ui.display_message(f"theme: {self.session.services.settings_manager.runtime.theme}", style="cyan")
+            available = ", ".join(self.session.services.settings_manager.available_themes())
+            current = self.session.services.settings_manager.runtime.theme
+            self.ui.display_message(f"theme: {current} (available: {available})", style="cyan")
+            return
+        if requested.lower() in {"toggle", "switch"}:
+            theme = self.session.services.settings_manager.toggle_theme()
+            self.ui.display_message(f"Theme switched to {theme}", style="green")
             return
         theme = self.session.services.settings_manager.set_theme(requested)
         self.ui.display_message(f"Theme set to {theme}", style="green")

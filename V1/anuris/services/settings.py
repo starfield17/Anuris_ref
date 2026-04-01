@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+SUPPORTED_THEMES = ("claude", "dark", "midnight", "default")
+
 
 @dataclass
 class RuntimeSettings:
@@ -27,8 +29,17 @@ class SettingsManager:
         normalized = theme.strip().lower()
         if not normalized:
             raise ValueError("theme is required")
+        if normalized not in SUPPORTED_THEMES:
+            raise ValueError(f"theme must be one of: {', '.join(SUPPORTED_THEMES)}")
         self.runtime.theme = normalized
         return normalized
+
+    def toggle_theme(self) -> str:
+        self.runtime.theme = "dark" if self.runtime.theme == "claude" else "claude"
+        return self.runtime.theme
+
+    def available_themes(self) -> tuple[str, ...]:
+        return SUPPORTED_THEMES
 
     def set_vim_mode(self, enabled: bool) -> bool:
         self.runtime.vim_mode = bool(enabled)
