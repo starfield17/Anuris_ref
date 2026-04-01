@@ -170,6 +170,8 @@ Interactive commands:
 - `/summary`
 - `/context`
 - `/memory [show|append|clear]`
+- `/rename [name]`
+- `/export [filename]`
 
 ## 6. Built-in Tools
 
