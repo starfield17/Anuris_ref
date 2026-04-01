@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import glob
+import json
 import os
 import shlex
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from rich.panel import Panel
@@ -18,6 +20,7 @@ from .command_specs import (
     register_workspace_commands,
     register_workflow_commands,
 )
+from .services.settings import DEFAULT_STATUSLINE_FORMAT, SUPPORTED_EFFORT_LEVELS, SUPPORTED_SANDBOX_MODES
 
 
 @dataclass
@@ -56,7 +59,7 @@ class CommandDispatcher:
         self._register(
             "agents",
             "Inspect or control teammates, inbox, and governance flows.",
-            "/agents [status|list|spawn|inbox|send|broadcast|shutdown|plans|approve|reject]",
+            "/agents [status|list|ui|ps|claim-next|spawn|inbox|send|broadcast|shutdown|plans|approve|reject]",
             self._handle_agents,
         )
         self._register("permissions", "Show or update the active permission mode.", "/permissions [mode]", self._handle_permissions)
@@ -72,6 +75,29 @@ class CommandDispatcher:
         self._register("output-style", "Show, pick, or set the output style.", "/output-style [plain|rich|pick]", self._handle_output_style)
         self._register("theme", "Show, pick, toggle, or set the theme.", "/theme [name|pick|toggle|switch]", self._handle_theme)
         self._register("vim", "Enable or disable vim mode flag.", "/vim [on|off|status]", self._handle_vim)
+        self._register("effort", "Show or set the runtime effort level.", "/effort [auto|low|medium|high|max]", self._handle_effort)
+        self._register("fast", "Show or toggle fast mode.", "/fast [on|off|toggle|status]", self._handle_fast)
+        self._register(
+            "statusline",
+            "Show, enable, disable, or format the interactive status line.",
+            "/statusline [on|off|format <tokens...>|setup [format...]]",
+            self._handle_statusline,
+        )
+        self._register(
+            "keybindings",
+            "Show, create, reload, or set custom prompt keybindings.",
+            "/keybindings [show|template [path]|path <path>|reload|reset]",
+            self._handle_keybindings,
+        )
+        self._register(
+            "sandbox-toggle",
+            "Manage local sandbox mode and excluded bash patterns.",
+            "/sandbox-toggle [workspace-write|read-only|off|exclude <pattern>|include <pattern>|list]",
+            self._handle_sandbox_toggle,
+            aliases=("sandbox",),
+        )
+        self._register("thinkback", "List, inspect, or show saved debug traces.", "/thinkback [list|latest|show <id>]", self._handle_thinkback)
+        self._register("thinkback-play", "Replay a saved debug trace into a fresh session.", "/thinkback-play <id>", self._handle_thinkback_play)
         register_analysis_commands(self)
         register_diagnostic_commands(self)
         register_event_commands(self)
@@ -267,8 +293,11 @@ class CommandDispatcher:
             f"Workspace: {self.session.workspace_root}",
             f"Tool mode: {'on' if self.session.agent_mode else 'off'}",
             f"Permission mode: {self.session.services.permission_manager.mode}",
+            f"Sandbox mode: {self.session.services.settings_manager.runtime.sandbox_mode}",
             f"Theme: {self.session.services.settings_manager.runtime.theme}",
             f"Output style: {self.session.services.settings_manager.runtime.output_style}",
+            f"Effort: {self.session.services.settings_manager.runtime.effort_level}",
+            f"Fast mode: {self.session.services.settings_manager.runtime.fast_mode}",
             f"Git: {git_summary}",
             f"Context files: {context_snapshot['files']}",
             f"Added dirs: {context_snapshot['added_dirs']}",
@@ -302,11 +331,7 @@ class CommandDispatcher:
     def _handle_agents(self, args: str) -> None:
         raw = args.strip()
         if not raw or raw == "status":
-            lines = [
-                self.session.team_runtime.describe(),
-                "",
-                "Subagent note: model-facing `task` delegates bounded work via a fresh subagent context.",
-            ]
+            lines = [self.session.team_runtime.render_dashboard(), "", self.session.team_runtime.describe(), "", "Subagent note: model-facing `task` delegates bounded work via a fresh subagent context."]
             self.ui.display_message(Panel.fit("\n".join(lines), border_style="cyan"))
             return
 
@@ -315,6 +340,19 @@ class CommandDispatcher:
 
         if action == "list":
             self.ui.display_message(self.session.team_runtime.list_members(), style="cyan")
+            return
+
+        if action in {"ui", "dashboard"}:
+            self.ui.display_message(self.session.team_runtime.render_dashboard(), style="cyan")
+            return
+
+        if action in {"ps", "processes"}:
+            self.ui.display_message(self.session.team_runtime.render_processes(), style="cyan")
+            return
+
+        if action == "claim-next":
+            owner = parts[1] if len(parts) > 1 else "lead"
+            self.ui.display_message(self.session.team_runtime.claim_next(owner), style="green")
             return
 
         if action == "spawn":
@@ -391,7 +429,7 @@ class CommandDispatcher:
             return
 
         self.ui.display_message(
-            "Usage: /agents [status|list|spawn|inbox|send|broadcast|shutdown|plans|approve|reject]",
+            "Usage: /agents [status|list|ui|ps|claim-next|spawn|inbox|send|broadcast|shutdown|plans|approve|reject]",
             style="yellow",
         )
 
@@ -586,6 +624,262 @@ class CommandDispatcher:
             return
         self.ui.display_message("Usage: /vim [on|off|status]", style="yellow")
 
+    def _handle_effort(self, args: str) -> None:
+        requested = (args.strip().lower() or "status")
+        current = self.session.services.settings_manager.runtime.effort_level
+        if requested in {"status", "current"}:
+            effective = current or "auto"
+            description = {
+                "auto": "model default balance",
+                "low": "quick and lightweight",
+                "medium": "balanced depth",
+                "high": "more thorough reasoning",
+                "max": "deepest local reasoning budget",
+            }.get(effective, "custom")
+            self.ui.display_message(f"Current effort level: {effective} ({description})", style="cyan")
+            return
+        try:
+            level = self.session.services.settings_manager.set_effort_level(requested)
+        except ValueError:
+            self.ui.display_message(
+                f"Invalid effort level: {requested}. Valid options are: {', '.join(SUPPORTED_EFFORT_LEVELS)}",
+                style="red",
+            )
+            return
+        suffix = {
+            "auto": "model default balance",
+            "low": "quick and lightweight",
+            "medium": "balanced depth",
+            "high": "more thorough reasoning",
+            "max": "deepest local reasoning budget",
+        }.get(level, "custom")
+        self.ui.display_message(f"Set effort level to {level}: {suffix}", style="green")
+
+    def _handle_fast(self, args: str) -> None:
+        action = (args.strip().lower() or "status")
+        settings = self.session.services.settings_manager
+        if action == "status":
+            self.ui.display_message(f"fast_mode: {settings.runtime.fast_mode}", style="cyan")
+            return
+        if action == "toggle":
+            state = settings.toggle_fast_mode()
+            self.ui.display_message(f"Fast mode {'ON' if state else 'OFF'}", style="green")
+            return
+        if action in {"on", "off"}:
+            state = settings.set_fast_mode(action == "on")
+            self.ui.display_message(f"Fast mode {'ON' if state else 'OFF'}", style="green")
+            return
+        self.ui.display_message("Usage: /fast [on|off|toggle|status]", style="yellow")
+
+    def _handle_statusline(self, args: str) -> None:
+        parts = shlex.split(args)
+        settings = self.session.services.settings_manager
+        if not parts:
+            self.ui.display_message(
+                "\n".join(
+                    [
+                        f"statusline_enabled: {settings.runtime.statusline_enabled}",
+                        f"statusline_format: {settings.runtime.statusline_format}",
+                        "available_tokens: model mode perm sandbox cwd session usage team fast effort vim",
+                    ]
+                ),
+                style="cyan",
+            )
+            return
+        action = parts[0].lower()
+        if action in {"on", "off"}:
+            enabled = settings.set_statusline_enabled(action == "on")
+            self.ui.display_message(f"Status line {'enabled' if enabled else 'disabled'}", style="green")
+            return
+        if action == "format":
+            value = self._tail_after_tokens(args, 1) or DEFAULT_STATUSLINE_FORMAT
+            fmt = settings.set_statusline_format(value)
+            self.ui.display_message(f"Updated statusline format: {fmt}", style="green")
+            return
+        if action == "setup":
+            settings.set_statusline_enabled(True)
+            value = self._tail_after_tokens(args, 1)
+            if value:
+                settings.set_statusline_format(value)
+            self.ui.display_message(
+                f"Status line setup complete. format={settings.runtime.statusline_format}",
+                style="green",
+            )
+            return
+        self.ui.display_message("Usage: /statusline [on|off|format <tokens...>|setup [format...]]", style="yellow")
+
+    def _handle_keybindings(self, args: str) -> None:
+        parts = shlex.split(args)
+        action = parts[0].lower() if parts else "show"
+        settings = self.session.services.settings_manager
+        if action == "show":
+            path = settings.runtime.keybindings_path or "~/.anuris_keybindings.toml (not yet configured)"
+            self.ui.display_message(
+                "\n".join(
+                    [
+                        f"keybindings_path: {path}",
+                        "supported_actions: submit, submit_alt, paste, undo, redo",
+                    ]
+                ),
+                style="cyan",
+            )
+            return
+        if action == "template":
+            requested = parts[1] if len(parts) > 1 else (settings.runtime.keybindings_path or str(Path.home() / ".anuris_keybindings.toml"))
+            path = Path(requested).expanduser().resolve()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(self._default_keybindings_template(), encoding="utf-8")
+            settings.set_keybindings_path(str(path))
+            if hasattr(self.ui, "rebuild_prompt_session"):
+                self.ui.rebuild_prompt_session()
+            self.ui.display_message(f"Keybindings template ready at {path}", style="green")
+            return
+        if action == "path":
+            if len(parts) < 2:
+                self.ui.display_message("Usage: /keybindings path <path>", style="yellow")
+                return
+            path = Path(parts[1]).expanduser().resolve()
+            settings.set_keybindings_path(str(path))
+            if hasattr(self.ui, "rebuild_prompt_session"):
+                self.ui.rebuild_prompt_session()
+            self.ui.display_message(f"Keybindings path set to {path}", style="green")
+            return
+        if action == "reload":
+            if hasattr(self.ui, "rebuild_prompt_session"):
+                self.ui.rebuild_prompt_session()
+            self.ui.display_message("Reloaded prompt keybindings.", style="green")
+            return
+        if action == "reset":
+            settings.set_keybindings_path("")
+            if hasattr(self.ui, "rebuild_prompt_session"):
+                self.ui.rebuild_prompt_session()
+            self.ui.display_message("Reset prompt keybindings to defaults.", style="green")
+            return
+        self.ui.display_message("Usage: /keybindings [show|template [path]|path <path>|reload|reset]", style="yellow")
+
+    def _handle_sandbox_toggle(self, args: str) -> None:
+        parts = shlex.split(args)
+        settings = self.session.services.settings_manager
+        if not parts or parts[0].lower() in {"status", "list"}:
+            patterns = settings.runtime.excluded_commands or []
+            rendered = "\n".join(
+                [
+                    f"sandbox_mode: {settings.runtime.sandbox_mode}",
+                    f"excluded_commands: {patterns if patterns else '(none)'}",
+                    "note: this is an Anuris-local tool policy layer, not an OS sandbox.",
+                ]
+            )
+            self.ui.display_message(rendered, style="cyan")
+            return
+        action = parts[0].lower()
+        if action in SUPPORTED_SANDBOX_MODES:
+            mode = settings.set_sandbox_mode(action)
+            self.ui.display_message(f"Sandbox mode set to {mode}", style="green")
+            return
+        if action == "exclude":
+            pattern = self._tail_after_tokens(args, 1)
+            if not pattern:
+                self.ui.display_message("Usage: /sandbox-toggle exclude <pattern>", style="yellow")
+                return
+            settings.add_excluded_command(pattern)
+            self.ui.display_message(f'Added "{pattern}" to excluded commands', style="green")
+            return
+        if action == "include":
+            pattern = self._tail_after_tokens(args, 1)
+            if not pattern:
+                self.ui.display_message("Usage: /sandbox-toggle include <pattern>", style="yellow")
+                return
+            settings.remove_excluded_command(pattern)
+            self.ui.display_message(f'Removed "{pattern}" from excluded commands', style="green")
+            return
+        self.ui.display_message(
+            "Usage: /sandbox-toggle [workspace-write|read-only|off|exclude <pattern>|include <pattern>|list]",
+            style="yellow",
+        )
+
+    def _handle_thinkback(self, args: str) -> None:
+        parts = shlex.split(args)
+        action = parts[0].lower() if parts else "list"
+        sessions = self._debug_trace_sessions()
+        if action == "list":
+            if not sessions:
+                self.ui.display_message("No thinkback sessions found.", style="yellow")
+                return
+            lines = ["Thinkback sessions:"]
+            for item in sessions[:20]:
+                lines.append(
+                    f"- {item['session_id']}: status={item['status']} requests={item['request_count']} updated={item['updated_at']} workspace={item['workspace_root']}"
+                )
+            self.ui.display_message("\n".join(lines), style="cyan")
+            return
+        if action == "latest":
+            if not sessions:
+                self.ui.display_message("No thinkback sessions found.", style="yellow")
+                return
+            transcript = Path(sessions[0]["transcript_path"]).read_text(encoding="utf-8")
+            self.ui.display_message(transcript, style="cyan")
+            return
+        if action == "show":
+            if len(parts) < 2:
+                self.ui.display_message("Usage: /thinkback show <id>", style="yellow")
+                return
+            session = next((item for item in sessions if item["session_id"] == parts[1]), None)
+            if not session:
+                self.ui.display_message(f"Unknown thinkback session: {parts[1]}", style="red")
+                return
+            self.ui.display_message(Path(session["transcript_path"]).read_text(encoding="utf-8"), style="cyan")
+            return
+        self.ui.display_message("Usage: /thinkback [list|latest|show <id>]", style="yellow")
+
+    def _handle_thinkback_play(self, args: str) -> None:
+        from .debug_server import DebugSessionManager, DebugTraceRunner
+
+        session_id = args.strip()
+        if not session_id:
+            self.ui.display_message("Usage: /thinkback-play <id>", style="yellow")
+            return
+        sessions = self._debug_trace_sessions()
+        source = next((item for item in sessions if item["session_id"] == session_id), None)
+        if not source:
+            self.ui.display_message(f"Unknown thinkback session: {session_id}", style="red")
+            return
+        events_path = Path(source["events_path"])
+        steps = []
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if payload.get("type") == "user_input_received" and payload.get("content"):
+                steps.append({"kind": "input", "content": str(payload["content"])})
+        if not steps:
+            self.ui.display_message(f"No replayable inputs found in {session_id}", style="yellow")
+            return
+        replay_id = f"{session_id}_replay"
+        debug_dir = self._debug_runs_dir()
+        manager = DebugSessionManager(
+            base_config=self.session.config,
+            workspace_root=self.session.workspace_root,
+            debug_dir=debug_dir,
+            model_factory=lambda _config: self.session.model,
+        )
+        runner = DebugTraceRunner(manager)
+        result = runner.run_trace(
+            {
+                "session": {
+                    "session_id": replay_id,
+                    "session_name": f"replay {session_id}",
+                    "agent_mode": self.session.agent_mode,
+                },
+                "steps": steps,
+                "markdown_path": str((debug_dir / f"{replay_id}.md").resolve()),
+            }
+        )
+        self.ui.display_message(
+            f"Replayed {session_id} -> {result['session_id']}\nmarkdown_path: {result['markdown_path']}\nevents_path: {result['events_path']}",
+            style="green",
+        )
+
     def _reload_plugins(self) -> None:
         self.session.services.plugin_manager.reload(self.session.workspace_root)
         skill_dirs = [
@@ -597,6 +891,16 @@ class CommandDispatcher:
             self.session.workspace_root,
             skills_dirs=skill_dirs,
         )
+
+    @staticmethod
+    def _default_keybindings_template() -> str:
+        return """[prompt]
+submit = "enter"
+submit_alt = "c-d"
+paste = "c-v"
+undo = "c-z"
+redo = "c-y"
+"""
 
     def _choose_option(self, title: str, options: List[str], default: str = "") -> str:
         if hasattr(self.ui, "select_option"):
@@ -640,6 +944,29 @@ class CommandDispatcher:
                 seen.add(item)
                 result.append(item)
         return result
+
+    @staticmethod
+    def _debug_runs_dir() -> Path:
+        return (Path.home() / ".anuris_debug_runs").expanduser().resolve()
+
+    def _debug_trace_sessions(self) -> List[dict]:
+        sessions_dir = self._debug_runs_dir() / "sessions"
+        if not sessions_dir.exists():
+            return []
+        items: List[dict] = []
+        for session_dir in sessions_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            session_path = session_dir / "session.json"
+            transcript_path = session_dir / "transcript.md"
+            events_path = session_dir / "events.jsonl"
+            if not session_path.exists():
+                continue
+            payload = json.loads(session_path.read_text(encoding="utf-8"))
+            payload["transcript_path"] = str(transcript_path)
+            payload["events_path"] = str(events_path)
+            items.append(payload)
+        return sorted(items, key=lambda item: str(item.get("updated_at", "")), reverse=True)
 
     def _git_summary(self) -> str:
         try:
@@ -696,6 +1023,13 @@ class CommandDispatcher:
             "output-style": "Runtime",
             "theme": "Runtime",
             "vim": "Runtime",
+            "effort": "Runtime",
+            "fast": "Runtime",
+            "statusline": "Runtime",
+            "keybindings": "Runtime",
+            "sandbox-toggle": "Runtime",
+            "thinkback": "Diagnostics",
+            "thinkback-play": "Diagnostics",
             "cost": "Diagnostics",
             "usage": "Diagnostics",
             "stats": "Diagnostics",

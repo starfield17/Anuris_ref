@@ -4,7 +4,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from .config import Config, ConfigManager
-from .services.settings import SUPPORTED_THEMES
+from .services.settings import SUPPORTED_EFFORT_LEVELS, SUPPORTED_SANDBOX_MODES, SUPPORTED_THEMES
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -26,6 +26,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--system-prompt-file", help="File containing custom system prompt")
     parser.add_argument("--output-style", choices=["plain", "rich"], help="Preferred interactive output style")
     parser.add_argument("--theme", choices=list(SUPPORTED_THEMES), help="Preferred interactive theme")
+    parser.add_argument(
+        "--effort-level",
+        choices=list(SUPPORTED_EFFORT_LEVELS),
+        help="Preferred runtime effort level (auto, low, medium, high, max).",
+    )
+    parser.add_argument(
+        "--fast-mode",
+        choices=["on", "off"],
+        default=None,
+        help="Enable or disable fast mode in the interactive runtime.",
+    )
+    parser.add_argument(
+        "--statusline",
+        choices=["on", "off"],
+        default=None,
+        help="Enable or disable the interactive status line.",
+    )
+    parser.add_argument("--statusline-format", help="Custom space-separated statusline tokens.")
+    parser.add_argument(
+        "--sandbox-mode",
+        choices=list(SUPPORTED_SANDBOX_MODES),
+        help="Local tool sandbox mode: workspace-write, read-only, or off.",
+    )
+    parser.add_argument(
+        "--exclude-command",
+        action="append",
+        default=None,
+        help="Command pattern to exclude from local bash execution. Can be repeated.",
+    )
+    parser.add_argument("--keybindings-path", help="Custom TOML/JSON keybindings file for the interactive prompt.")
     parser.add_argument(
         "--vim-mode",
         choices=["on", "off"],
@@ -68,8 +98,15 @@ def merge_runtime_config(args: argparse.Namespace, config_manager: ConfigManager
     for key, value in vars(args).items():
         if key == "reasoning" and isinstance(value, str):
             value = value == "on"
+        if key == "fast_mode" and isinstance(value, str):
+            value = value == "on"
+        if key == "statusline" and isinstance(value, str):
+            key = "statusline_enabled"
+            value = value == "on"
         if key == "vim_mode" and isinstance(value, str):
             value = value == "on"
+        if key == "exclude_command" and isinstance(value, list):
+            key = "excluded_commands"
         if value is not None and key in config_dict:
             config_dict[key] = value
 

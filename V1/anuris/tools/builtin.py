@@ -58,6 +58,12 @@ class BashTool(BaseTool):
         timeout = int(args.get("timeout_sec", 20))
         if not command:
             raise ValueError("command is required")
+        if not context.permission_context.permits_command(command):
+            return ToolExecutionResult(
+                model_content="Command blocked by local sandbox exclude rules.",
+                is_error=True,
+                summary=f"bash excluded: {command}",
+            )
         if context.permission_context.mode == "readonly" and _looks_write_like(command):
             return ToolExecutionResult(
                 model_content="Readonly subagent cannot run write-like shell commands.",

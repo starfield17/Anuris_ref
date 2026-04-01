@@ -96,6 +96,46 @@ class PersistentTaskManager:
         with self._lock:
             return [json.loads(path.read_text()) for path in self._task_paths()]
 
+    def summary_counts(self) -> dict:
+        tasks = self.list_records()
+        counts = {
+            "total": len(tasks),
+            "pending": 0,
+            "in_progress": 0,
+            "completed": 0,
+            "blocked": 0,
+            "unowned": 0,
+        }
+        owners: dict[str, int] = {}
+        for task in tasks:
+            status = str(task.get("status", "") or "")
+            if status in counts:
+                counts[status] += 1
+            if task.get("blockedBy"):
+                counts["blocked"] += 1
+            owner = str(task.get("owner", "") or "").strip()
+            if owner:
+                owners[owner] = owners.get(owner, 0) + 1
+            else:
+                counts["unowned"] += 1
+        counts["owners"] = owners
+        return counts
+
+    def render_summary(self) -> str:
+        counts = self.summary_counts()
+        owners = counts.pop("owners", {})
+        lines = [
+            f"tasks_total: {counts['total']}",
+            f"pending: {counts['pending']}",
+            f"in_progress: {counts['in_progress']}",
+            f"completed: {counts['completed']}",
+            f"blocked: {counts['blocked']}",
+            f"unowned: {counts['unowned']}",
+        ]
+        if owners:
+            lines.append("owners: " + ", ".join(f"{name}={count}" for name, count in sorted(owners.items())))
+        return "\n".join(lines)
+
     def claim_task(self, task_id: int, owner: str) -> str:
         with self._lock:
             task = self._load(task_id)

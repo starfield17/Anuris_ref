@@ -40,19 +40,35 @@ class PermissionManager:
         *,
         agent_mode: bool,
         explicit_allowed_tools: Optional[set[str]] = None,
+        sandbox_mode: str = "workspace-write",
+        excluded_commands: Optional[list[str]] = None,
     ) -> PermissionContext:
         if not agent_mode:
-            return PermissionContext(mode=self.mode, allowed_tools=set())
+            return PermissionContext(
+                mode=self.mode,
+                allowed_tools=set(),
+                sandbox_mode=sandbox_mode,
+                excluded_commands=tuple(excluded_commands or ()),
+            )
 
         allowed_tools = None if explicit_allowed_tools is None else set(explicit_allowed_tools)
-        if self.mode == "readonly":
+        effective_mode = self.mode
+        if sandbox_mode == "read-only" and effective_mode == "default":
+            effective_mode = "readonly"
+
+        if effective_mode == "readonly":
             if allowed_tools is None:
                 allowed_tools = None
             else:
                 allowed_tools -= self.READONLY_DENY
-        elif self.mode == "plan":
+        elif effective_mode == "plan":
             allowed_tools = set(self.PLAN_ALLOWED) if allowed_tools is None else (set(allowed_tools) & self.PLAN_ALLOWED)
-        return PermissionContext(mode=self.mode, allowed_tools=allowed_tools)
+        return PermissionContext(
+            mode=effective_mode,
+            allowed_tools=allowed_tools,
+            sandbox_mode=sandbox_mode,
+            excluded_commands=tuple(excluded_commands or ()),
+        )
 
     def render(self) -> str:
         return f"permission_mode: {self.mode}"

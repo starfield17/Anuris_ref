@@ -45,6 +45,20 @@ class BootstrapTests(unittest.TestCase):
                 "dark",
                 "--output-style",
                 "plain",
+                "--effort-level",
+                "high",
+                "--fast-mode",
+                "on",
+                "--statusline",
+                "off",
+                "--statusline-format",
+                "model cwd session",
+                "--sandbox-mode",
+                "read-only",
+                "--exclude-command",
+                "npm run test",
+                "--keybindings-path",
+                "/tmp/keys.toml",
                 "--vim-mode",
                 "on",
             ]
@@ -56,6 +70,13 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(args.debug_port, 9001)
         self.assertEqual(args.theme, "dark")
         self.assertEqual(args.output_style, "plain")
+        self.assertEqual(args.effort_level, "high")
+        self.assertEqual(args.fast_mode, "on")
+        self.assertEqual(args.statusline, "off")
+        self.assertEqual(args.statusline_format, "model cwd session")
+        self.assertEqual(args.sandbox_mode, "read-only")
+        self.assertEqual(args.exclude_command, ["npm run test"])
+        self.assertEqual(args.keybindings_path, "/tmp/keys.toml")
         self.assertEqual(args.vim_mode, "on")
 
     def test_resolve_system_prompt_arg_from_file(self):
@@ -90,6 +111,13 @@ class BootstrapTests(unittest.TestCase):
             system_prompt_file=None,
             theme="dark",
             output_style="plain",
+            effort_level="high",
+            fast_mode="on",
+            statusline="off",
+            statusline_format="model cwd session",
+            sandbox_mode="read-only",
+            exclude_command=["npm run test"],
+            keybindings_path="/tmp/keys.toml",
             vim_mode="on",
             save_config=False,
         )
@@ -102,6 +130,13 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse(merged_config.reasoning)
         self.assertEqual(merged_config.theme, "dark")
         self.assertEqual(merged_config.output_style, "plain")
+        self.assertEqual(merged_config.effort_level, "high")
+        self.assertTrue(merged_config.fast_mode)
+        self.assertFalse(merged_config.statusline_enabled)
+        self.assertEqual(merged_config.statusline_format, "model cwd session")
+        self.assertEqual(merged_config.sandbox_mode, "read-only")
+        self.assertEqual(merged_config.excluded_commands, ["npm run test"])
+        self.assertEqual(merged_config.keybindings_path, "/tmp/keys.toml")
         self.assertTrue(merged_config.vim_mode)
         self.assertEqual(config_dict["api_key"], "saved-key")
 

@@ -11,8 +11,10 @@ from anuris.services import (
     ContextFileTracker,
     HookManager,
     MCPManager,
+    NotificationCenter,
     PermissionManager,
     PluginManager,
+    RuntimeWatcher,
     SessionCatalog,
     SettingsManager,
     UsageTracker,
@@ -67,6 +69,8 @@ class QueryEngineTests(unittest.TestCase):
             hook_manager=HookManager(self.workspace),
             context_files=ContextFileTracker(self.workspace),
             usage_tracker=UsageTracker(),
+            notification_center=NotificationCenter(),
+            runtime_watcher=RuntimeWatcher(PersistentTaskManager(self.workspace / ".anuris" / "tasks")),
         )
         self.tool_registry = ToolRegistry(build_default_tools())
         self.config = Config(api_key="k", model="fake-model", base_url="https://example.com/v1")
@@ -176,3 +180,31 @@ class QueryEngineTests(unittest.TestCase):
         result = engine.submit("Find the MCP-related tools.")
         self.assertEqual(result.final_text, "Use the MCP tools.")
         self.assertTrue(any(message.role == "tool" and "list_mcp_resources" in str(message.content) for message in store.messages))
+
+    def test_query_engine_injects_runtime_notices_and_prefetched_skills(self):
+        skills_dir = self.workspace / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "pytest.md").write_text("---\ndescription: Run Python tests safely\n---\nUse pytest.", encoding="utf-8")
+        self.services.skill_loader.refresh()
+        self.services.notification_center.enqueue("Task #1 completed", kind="task_completed")
+
+        model = FakeModel([{"choices": [{"message": {"content": "Use pytest if needed."}}]}])
+        store = SessionStore("system", self.workspace, "eng6")
+        events = []
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+            event_callback=events.append,
+        )
+
+        result = engine.submit("Please run pytest on the repo.")
+        self.assertEqual(result.final_text, "Use pytest if needed.")
+        first_call = model.calls[0]
+        messages = first_call["messages"]
+        self.assertTrue(any("Queued runtime notices" in str(message.get("content", "")) for message in messages))
+        self.assertTrue(any("Relevant available skills" in str(message.get("content", "")) for message in messages))
+        self.assertTrue(any(event.get("type") == "skill_prefetch" for event in events))

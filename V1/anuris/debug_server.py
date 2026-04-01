@@ -154,6 +154,12 @@ class DebugSessionRecorder:
                 lines.extend(["### User", "", str(event.get("content", "")), ""])
             elif event_type == "assistant_reasoning":
                 lines.extend(["### Reasoning", "", "```text", str(event.get("content", "")), "```", ""])
+            elif event_type == "skill_prefetch":
+                lines.extend(["### Skill Prefetch", "", "```json", json.dumps(event.get("skills", []), ensure_ascii=False, indent=2), "```", ""])
+            elif event_type == "runtime_notice_injected":
+                lines.extend(["### Runtime Notices", "", "```json", json.dumps(event.get("notices", []), ensure_ascii=False, indent=2), "```", ""])
+            elif event_type == "before_model_call":
+                lines.extend(["### Model Call", "", "```json", json.dumps({k: v for k, v in event.items() if k not in {'type', 'timestamp', 'session_id', 'sequence'}}, ensure_ascii=False, indent=2), "```", ""])
             elif event_type == "tool_called":
                 lines.extend(
                     [
@@ -171,6 +177,8 @@ class DebugSessionRecorder:
                 lines.extend(["### Assistant", "", str(event.get("content", "")), ""])
             elif event_type == "request_failed":
                 lines.extend(["### Error", "", "```text", str(event.get("error", "")), "```", ""])
+            elif event_type in {"task_completed", "teammate_idle", "teammate_shutdown", "teammate_status_changed"}:
+                lines.extend(["### Runtime Event", "", "```json", json.dumps(event, ensure_ascii=False, indent=2), "```", ""])
             elif event_type == "request_finished":
                 lines.extend([f"- Finished: rounds={event.get('round_count', 0)} interrupted={event.get('interrupted', False)}", ""])
         return "\n".join(lines).rstrip() + "\n"

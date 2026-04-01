@@ -86,6 +86,39 @@ class SkillLoader:
             lines.append(f"- {name}: {skill['description']} ({skill['path']})")
         return "\n".join(lines)
 
+    def prefetch(self, prompt: str, limit: int = 3) -> List[Dict[str, str]]:
+        self.refresh()
+        normalized_prompt = self._normalize(prompt)
+        raw_tokens = {token for token in re.split(r"[^a-zA-Z0-9_-]+", prompt.lower()) if token}
+        scored: List[tuple[int, str]] = []
+        for name, skill in self.skills.items():
+            score = 0
+            aliases = {name, self._normalize(name)}
+            aliases.update(alias for alias, target in self.alias_map.items() if target == name)
+            for alias in aliases:
+                if not alias:
+                    continue
+                if alias in normalized_prompt:
+                    score += 5
+                alias_tokens = {token for token in alias.split("-") if token}
+                score += len(alias_tokens & raw_tokens)
+            description_tokens = {token for token in re.split(r"[^a-zA-Z0-9_-]+", skill["description"].lower()) if token}
+            score += min(2, len(description_tokens & raw_tokens))
+            if score > 0:
+                scored.append((score, name))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        results: List[Dict[str, str]] = []
+        for _, name in scored[:limit]:
+            skill = self.skills[name]
+            results.append(
+                {
+                    "name": name,
+                    "description": skill["description"],
+                    "path": skill["path"],
+                }
+            )
+        return results
+
     @staticmethod
     def _parse_frontmatter(text: str) -> tuple[Dict[str, str], str]:
         match = re.match(r"^---\n(.*?)\n---\n(.*)", text, re.DOTALL)

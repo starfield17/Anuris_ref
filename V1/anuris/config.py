@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import toml
@@ -21,6 +21,13 @@ class Config:
     output_style: str = "rich"
     theme: str = "claude"
     vim_mode: bool = False
+    effort_level: str = ""
+    fast_mode: bool = False
+    statusline_enabled: bool = True
+    statusline_format: str = "model mode perm sandbox cwd session usage team fast effort vim"
+    sandbox_mode: str = "workspace-write"
+    excluded_commands: list[str] = field(default_factory=list)
+    keybindings_path: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":

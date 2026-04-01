@@ -22,6 +22,8 @@ def _handle_stats(dispatcher, args: str) -> None:
     session = dispatcher.session
     usage = session.services.usage_tracker.snapshot()
     context = session.services.context_files.snapshot()
+    task_summary = session.services.task_manager.summary_counts()
+    team_summary = session.team_runtime.summary_counts() if hasattr(session, "team_runtime") else {}
     lines = [
         "Runtime stats:",
         f"- session_id: {session.session_id}",
@@ -33,12 +35,16 @@ def _handle_stats(dispatcher, args: str) -> None:
         f"- pending_attachments: {len(session.attachment_manager.attachments)}",
         f"- context_files: {context['files']}",
         f"- added_dirs: {context['added_dirs']}",
-        f"- tasks: {len(session.services.task_manager.list_records())}",
+        f"- tasks: {task_summary['total']} (pending={task_summary['pending']}, in_progress={task_summary['in_progress']}, completed={task_summary['completed']}, blocked={task_summary['blocked']})",
         f"- todos: {len(session.services.todo_manager.items)}",
         f"- skills: {len(session.services.skill_loader.skills)}",
         f"- plugins: {len(session.services.plugin_manager.plugins)}",
         f"- mcp_resources: {len(session.services.mcp_manager.list_resources())}",
         f"- saved_sessions: {len(session.services.session_catalog.list_sessions())}",
+        f"- runtime_notices: {session.services.notification_center.count() if session.services.notification_center else 0}",
+        f"- team_members: {team_summary.get('members', 0)}",
+        f"- team_inbox: {team_summary.get('lead_inbox', 0)}",
+        f"- team_plans_pending: {team_summary.get('plans_pending', 0)}",
     ]
     dispatcher.ui.display_message("\n".join(lines), style="cyan")
 

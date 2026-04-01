@@ -10,6 +10,27 @@ from typing import Any, Dict, List
 class HookManager:
     """Simple local hook registry for tool and session events."""
 
+    SUPPORTED_EVENTS = (
+        "request_started",
+        "user_input_received",
+        "user_message",
+        "assistant_reasoning",
+        "assistant_message",
+        "before_model_call",
+        "tool_called",
+        "tool_result",
+        "request_finished",
+        "request_failed",
+        "compact_boundary",
+        "skill_prefetch",
+        "runtime_notice_injected",
+        "task_completed",
+        "task_status_changed",
+        "teammate_idle",
+        "teammate_shutdown",
+        "teammate_status_changed",
+    )
+
     def __init__(self, workspace_root: Path):
         self.workspace_root = Path(workspace_root).resolve()
         self.hooks_path = self.workspace_root / ".anuris" / "hooks.json"
@@ -72,5 +93,8 @@ class HookManager:
 
     def render(self) -> str:
         if not self.hooks:
-            return "No hooks configured."
-        return "\n".join(f"[{index}] {item['event']} -> {item['command']}" for index, item in enumerate(self.hooks))
+            return "No hooks configured.\nSupported events: " + ", ".join(self.SUPPORTED_EVENTS)
+        return "\n".join(
+            [f"[{index}] {item['event']} -> {item['command']}" for index, item in enumerate(self.hooks)]
+            + ["", "Supported events: " + ", ".join(self.SUPPORTED_EVENTS)]
+        )

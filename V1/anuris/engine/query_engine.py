@@ -64,14 +64,45 @@ class QueryEngine:
 
         reasoning_parts: List[str] = []
         tool_events: List[str] = []
+        runtime_notices = []
+        if getattr(self.services, "notification_center", None) is not None:
+            runtime_notices = self.services.notification_center.drain()
+        prefetched_skills = []
+        if getattr(self.services, "skill_loader", None) is not None:
+            prefetched_skills = self.services.skill_loader.prefetch(prompt)
+        if runtime_notices:
+            self._emit("runtime_notice_injected", notices=runtime_notices)
+        if prefetched_skills:
+            self._emit("skill_prefetch", skills=prefetched_skills)
 
         for round_index in range(1, self.max_turns + 1):
             self._maybe_auto_compact()
             self._emit("agent_round_started", round=round_index)
             tool_context = self._build_tool_context(permission, allowed_tool_names)
             active_tools = self.tool_registry.get_schemas(tool_context, allowed_tool_names=allowed_tool_names)
+            api_messages = self.session_store.to_api_messages()
+            transient_messages: List[Dict[str, Any]] = []
+            if runtime_notices:
+                lines = ["Queued runtime notices for this turn:"]
+                lines.extend(f"- {item.get('message', '')}" for item in runtime_notices)
+                transient_messages.append({"role": "system", "content": "\n".join(lines)})
+            if prefetched_skills:
+                lines = ["Relevant available skills (load with `load_skill` if useful):"]
+                lines.extend(f"- {item['name']}: {item['description']}" for item in prefetched_skills)
+                transient_messages.append({"role": "system", "content": "\n".join(lines)})
+            if transient_messages and api_messages:
+                api_messages = [api_messages[0], *transient_messages, *api_messages[1:]]
+            elif transient_messages:
+                api_messages = transient_messages
+            self._emit(
+                "before_model_call",
+                round=round_index,
+                active_tools=[tool["function"]["name"] for tool in active_tools],
+                prefetched_skills=[item["name"] for item in prefetched_skills],
+                queued_notices=len(runtime_notices),
+            )
             response = self.model.create_completion(
-                messages=self.session_store.to_api_messages(),
+                messages=api_messages,
                 stream=False,
                 tools=active_tools or None,
                 tool_choice="auto" if active_tools else None,

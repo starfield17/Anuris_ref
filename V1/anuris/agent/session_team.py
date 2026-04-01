@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Any, Optional
 
 from .executor import AgentToolExecutor
@@ -52,6 +53,10 @@ class SessionTeamRuntime:
         return self.executor.team_manager
 
     @property
+    def task_manager(self):
+        return self.executor.task_manager
+
+    @property
     def team_dir(self) -> Path:
         return self.team_manager.team_dir
 
@@ -76,6 +81,80 @@ class SessionTeamRuntime:
             self.runner.get_shutdown_snapshot(),
         ]
         return "\n".join(lines)
+
+    def roster(self) -> list[dict[str, str]]:
+        return [dict(item) for item in self.team_manager._config.get("members", []) if isinstance(item, dict)]
+
+    def summary_counts(self) -> dict[str, int]:
+        roster = self.roster()
+        counts = {
+            "members": len(roster),
+            "working": 0,
+            "idle": 0,
+            "shutdown": 0,
+            "error": 0,
+            "lead_inbox": self._count_inbox("lead"),
+            "plans_pending": 0,
+            "shutdowns_pending": 0,
+        }
+        for member in roster:
+            status = str(member.get("status", "") or "")
+            if status in counts:
+                counts[status] += 1
+        for request in getattr(self.team_manager, "_plan_requests", {}).values():
+            if str(request.get("status", "")) == "pending":
+                counts["plans_pending"] += 1
+        for request in getattr(self.team_manager, "_shutdown_requests", {}).values():
+            if str(request.get("status", "")) == "pending":
+                counts["shutdowns_pending"] += 1
+        return counts
+
+    def render_dashboard(self) -> str:
+        counts = self.summary_counts()
+        task_summary = self.task_manager.render_summary() if self.task_manager else "tasks_total: 0"
+        lines = [
+            "Team dashboard:",
+            f"- members: {counts['members']} (working={counts['working']}, idle={counts['idle']}, shutdown={counts['shutdown']}, error={counts['error']})",
+            f"- lead_inbox: {counts['lead_inbox']}",
+            f"- plans_pending: {counts['plans_pending']}",
+            f"- shutdowns_pending: {counts['shutdowns_pending']}",
+            "",
+            "Roster:",
+        ]
+        if not self.roster():
+            lines.append("- (no teammates)")
+        else:
+            for member in self.roster():
+                lines.append(
+                    f"- {member.get('name', '?')}: role={member.get('role', 'teammate')} status={member.get('status', 'unknown')}"
+                )
+        lines.extend(["", "Tasks:", task_summary])
+        return "\n".join(lines)
+
+    def render_processes(self) -> str:
+        roster = self.roster()
+        owner_counts = self.task_manager.summary_counts().get("owners", {}) if self.task_manager else {}
+        lines = ["Teammate processes:"]
+        if not roster:
+            lines.append("- (no teammates)")
+        else:
+            for member in roster:
+                name = str(member.get("name", "?"))
+                lines.append(
+                    f"- {name}: status={member.get('status', 'unknown')} role={member.get('role', 'teammate')} tasks={owner_counts.get(name, 0)} inbox={self._count_inbox(name)}"
+                )
+        lines.append(
+            f"- lead: inbox={self._count_inbox('lead')} tasks={owner_counts.get('lead', 0)} plans={self.summary_counts()['plans_pending']}"
+        )
+        return "\n".join(lines)
+
+    def claim_next(self, owner: str = "lead") -> str:
+        if not self.task_manager:
+            return "Task manager unavailable"
+        task = self.task_manager.claim_next_unblocked(owner)
+        if not task:
+            return f"No unblocked tasks available for {owner}"
+        return json.dumps(task, ensure_ascii=False, indent=2)
 
     def spawn(self, name: str, role: str, prompt: str) -> str:
         return self.executor.run_spawn_teammate(name, role, prompt)
@@ -106,3 +185,9 @@ class SessionTeamRuntime:
 
     def review_plan(self, request_id: str, approve: bool, feedback: str = "") -> str:
         return self.executor.run_plan_review(request_id, approve, feedback)
+
+    def _count_inbox(self, name: str) -> int:
+        inbox_path = self.inbox_dir / f"{name}.jsonl"
+        if not inbox_path.exists():
+            return 0
+        return len([line for line in inbox_path.read_text(encoding="utf-8").splitlines() if line.strip()])

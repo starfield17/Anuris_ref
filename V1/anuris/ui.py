@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import toml
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
@@ -93,22 +95,27 @@ class ChatUI:
 
     def bind_session(self, session: Any) -> None:
         self._session_ref = session
+        self.rebuild_prompt_session()
+
+    def rebuild_prompt_session(self) -> None:
+        self.session = self._create_prompt_session()
 
     def _create_prompt_session(self) -> PromptSession:
         key_bindings = KeyBindings()
         undo_stack = []
         redo_stack = []
+        binding_map = self._load_keybindings_map()
 
-        @key_bindings.add(Keys.Enter, eager=True)
+        @key_bindings.add(binding_map["submit"], eager=True)
         def _(event):
             event.current_buffer.validate_and_handle()
 
-        @key_bindings.add(Keys.ControlD)
+        @key_bindings.add(binding_map["submit_alt"])
         def _(event):
             if event.current_buffer.text.strip():
                 event.current_buffer.validate_and_handle()
 
-        @key_bindings.add(Keys.ControlV)
+        @key_bindings.add(binding_map["paste"])
         def _(event):
             try:
                 import pyperclip
@@ -121,7 +128,7 @@ class ChatUI:
             except Exception as exc:
                 self.display_message(f"Failed to paste: {str(exc)}", style="red")
 
-        @key_bindings.add("c-z", eager=True)
+        @key_bindings.add(binding_map["undo"], eager=True)
         def _(event):
             if not undo_stack:
                 current_text = event.current_buffer.text
@@ -135,7 +142,7 @@ class ChatUI:
                 redo_stack.append(current_text)
                 event.current_buffer.text = last_state
 
-        @key_bindings.add("c-y", eager=True)
+        @key_bindings.add(binding_map["redo"], eager=True)
         def _(event):
             if redo_stack:
                 current_text = event.current_buffer.text
@@ -148,6 +155,39 @@ class ChatUI:
             auto_suggest=AutoSuggestFromHistory(),
             key_bindings=key_bindings,
         )
+
+    def _load_keybindings_map(self) -> dict[str, str]:
+        defaults = {
+            "submit": "enter",
+            "submit_alt": "c-d",
+            "paste": "c-v",
+            "undo": "c-z",
+            "redo": "c-y",
+        }
+        settings = self._settings()
+        runtime = getattr(settings, "runtime", None) if settings else None
+        path = str(getattr(runtime, "keybindings_path", "") or "").strip()
+        if not path:
+            return defaults
+        resolved = Path(path).expanduser()
+        if not resolved.exists():
+            return defaults
+        try:
+            if resolved.suffix.lower() == ".json":
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+            else:
+                payload = toml.loads(resolved.read_text(encoding="utf-8"))
+        except Exception:
+            return defaults
+        prompt_config = payload.get("prompt", {}) if isinstance(payload, dict) else {}
+        if not isinstance(prompt_config, dict):
+            return defaults
+        merged = dict(defaults)
+        for key in defaults:
+            value = prompt_config.get(key)
+            if isinstance(value, str) and value.strip():
+                merged[key] = value.strip().lower()
+        return merged
 
     def _settings(self) -> Any:
         if self._session_ref and hasattr(self._session_ref, "services"):
@@ -183,18 +223,40 @@ class ChatUI:
         cwd = Path(getattr(self._session_ref, "workspace_root", Path.cwd())).name or str(
             getattr(self._session_ref, "workspace_root", Path.cwd())
         )
+        if runtime and not getattr(runtime, "statusline_enabled", True):
+            return []
 
-        segments = [
-            (f"model {self._session_ref.config.model}", palette.accent),
-            (f"{'agent' if self._session_ref.agent_mode else 'chat'} mode", palette.accent_soft),
-            (f"perm {getattr(permission_manager, 'mode', 'default')}", palette.tool),
-            (f"cwd {cwd}", palette.muted),
-            (f"session {self._session_title()}", palette.assistant),
-        ]
-        if usage_tracker:
-            segments.append((f"q {usage_tracker.query_count} · tools {usage_tracker.tool_call_count}", palette.muted))
-        if runtime and getattr(runtime, "vim_mode", False):
-            segments.append(("vim", palette.warning))
+        tokens = getattr(settings, "statusline_tokens", lambda: ["model", "mode", "perm", "cwd", "session", "usage", "vim"])()
+        team_runtime = getattr(self._session_ref, "team_runtime", None)
+        team_summary = team_runtime.summary_counts() if team_runtime and hasattr(team_runtime, "summary_counts") else {}
+
+        token_map = {
+            "model": (f"model {self._session_ref.config.model}", palette.accent),
+            "mode": (f"{'agent' if self._session_ref.agent_mode else 'chat'} mode", palette.accent_soft),
+            "perm": (f"perm {getattr(permission_manager, 'mode', 'default')}", palette.tool),
+            "sandbox": (f"sandbox {getattr(runtime, 'sandbox_mode', 'workspace-write')}", palette.tool),
+            "cwd": (f"cwd {cwd}", palette.muted),
+            "session": (f"session {self._session_title()}", palette.assistant),
+            "usage": (
+                f"q {getattr(usage_tracker, 'query_count', 0)} · tools {getattr(usage_tracker, 'tool_call_count', 0)}",
+                palette.muted,
+            ),
+            "team": (
+                f"team {team_summary.get('members', 0)} · inbox {team_summary.get('lead_inbox', 0)} · plans {team_summary.get('plans_pending', 0)}",
+                palette.assistant,
+            ),
+            "fast": (f"fast {'on' if getattr(runtime, 'fast_mode', False) else 'off'}", palette.warning),
+            "effort": (f"effort {getattr(runtime, 'effort_level', 'auto')}", palette.accent_soft),
+            "vim": ("vim", palette.warning),
+        }
+
+        segments: list[tuple[str, str]] = []
+        for token in tokens:
+            if token == "vim" and not (runtime and getattr(runtime, "vim_mode", False)):
+                continue
+            segment = token_map.get(token)
+            if segment:
+                segments.append(segment)
         return segments
 
     def display_status_line(self) -> None:

@@ -20,8 +20,10 @@ from .services import (
     HookManager,
     MCPManager,
     MemoryManager,
+    NotificationCenter,
     PermissionManager,
     PluginManager,
+    RuntimeWatcher,
     SessionCatalog,
     SettingsManager,
     UsageTracker,
@@ -160,6 +162,8 @@ class ChatSession:
             reset_workspace=self.reset_workspace,
         )
         self.team_runtime = self._build_team_runtime(self.workspace_root)
+        if self.services.runtime_watcher:
+            self.services.runtime_watcher.set_team_runtime_provider(lambda: self.team_runtime)
         self.command_dispatcher = CommandDispatcher(self)
         if hasattr(self.ui, "bind_session"):
             self.ui.bind_session(self)
@@ -176,6 +180,7 @@ class ChatSession:
     ) -> SessionResponse:
         request_id = self._next_request_id()
         self._clear_ui_output()
+        self._poll_runtime_watchers()
         self._emit_event("request_started", request_id=request_id, request_kind=request_kind, agent_mode=self.agent_mode)
         try:
             added_attachments = self._attach_paths(attachment_paths or [])
@@ -201,6 +206,7 @@ class ChatSession:
                 final_text=response.final_text,
                 round_count=response.round_count,
             )
+            self._poll_runtime_watchers()
             return response
         except Exception as exc:
             self._emit_event("request_failed", request_id=request_id, request_kind=request_kind, error=str(exc))
@@ -245,6 +251,8 @@ class ChatSession:
         permission_context = self.services.permission_manager.create_context(
             agent_mode=self.agent_mode,
             explicit_allowed_tools=allowed_tool_names,
+            sandbox_mode=self.services.settings_manager.runtime.sandbox_mode,
+            excluded_commands=self.services.settings_manager.runtime.excluded_commands,
         )
         result = self.engine.submit(
             user_input,
@@ -279,16 +287,6 @@ class ChatSession:
         event_type = event.get("type", "")
         if event_type == "tool_called":
             self.services.usage_tracker.record_tool_call()
-        if event_type in {"tool_called", "tool_result", "compact_boundary", "request_finished"}:
-            hook_results = self.services.hook_manager.run(event_type, event)
-            if not self.is_headless:
-                for result in hook_results:
-                    if result["returncode"] != "0":
-                        message = result["stderr"] or result["stdout"] or "(no output)"
-                        if hasattr(self.ui, "display_activity_event"):
-                            self.ui.display_activity_event(f"hook:{event_type}", message, tone="danger")
-                        else:
-                            self.ui.display_message(f"[hook:{event_type}] {message}", style="red")
         if not self.is_headless:
             if event_type == "agent_round_started":
                 if hasattr(self.ui, "display_activity_event"):
@@ -324,6 +322,17 @@ class ChatSession:
         return added
 
     def _emit_event(self, event_type: str, **payload: Any) -> None:
+        hook_manager = getattr(self.services, "hook_manager", None)
+        if hook_manager is not None:
+            hook_results = hook_manager.run(event_type, {"type": event_type, **payload})
+            if not self.is_headless:
+                for result in hook_results:
+                    if result["returncode"] != "0":
+                        message = result["stderr"] or result["stdout"] or "(no output)"
+                        if hasattr(self.ui, "display_activity_event"):
+                            self.ui.display_activity_event(f"hook:{event_type}", message, tone="danger")
+                        else:
+                            self.ui.display_message(f"[hook:{event_type}] {message}", style="red")
         if not self.event_callback:
             return
         self.event_callback({"type": event_type, **payload})
@@ -360,11 +369,14 @@ class ChatSession:
         self.tool_registry = ToolRegistry(build_default_tools())
         self.engine.tool_registry = self.tool_registry
         self.team_runtime = self._build_team_runtime(self.workspace_root)
+        if self.services.runtime_watcher:
+            self.services.runtime_watcher.set_team_runtime_provider(lambda: self.team_runtime)
         if hasattr(self.ui, "bind_session"):
             self.ui.bind_session(self)
 
     def _build_services(self, workspace_root: Path) -> SessionServices:
         plugin_manager = PluginManager(workspace_root)
+        task_manager = PersistentTaskManager(workspace_root / ".anuris" / "tasks")
         skill_dirs = [
             workspace_root / ".anuris_skills",
             workspace_root / "skills",
@@ -372,7 +384,7 @@ class ChatSession:
         ]
         return SessionServices(
             todo_manager=TodoManager(),
-            task_manager=PersistentTaskManager(workspace_root / ".anuris" / "tasks"),
+            task_manager=task_manager,
             skill_loader=SkillLoader(workspace_root, skills_dirs=skill_dirs),
             permission_manager=PermissionManager(),
             session_catalog=SessionCatalog(workspace_root),
@@ -384,6 +396,8 @@ class ChatSession:
             context_files=ContextFileTracker(workspace_root),
             usage_tracker=UsageTracker(),
             memory_manager=MemoryManager(workspace_root),
+            notification_center=NotificationCenter(),
+            runtime_watcher=RuntimeWatcher(task_manager),
         )
 
     def _build_team_runtime(self, workspace_root: Path) -> SessionTeamRuntime:
@@ -398,6 +412,8 @@ class ChatSession:
         permission_context = self.services.permission_manager.create_context(
             agent_mode=self.agent_mode,
             explicit_allowed_tools=None if self.agent_mode else set(),
+            sandbox_mode=self.services.settings_manager.runtime.sandbox_mode,
+            excluded_commands=self.services.settings_manager.runtime.excluded_commands,
         )
         result = self.engine.submit(
             prompt,
@@ -418,6 +434,17 @@ class ChatSession:
     def _next_request_id(self) -> str:
         self.request_counter += 1
         return f"{self.session_id}_{self.request_counter:04d}"
+
+    def _poll_runtime_watchers(self) -> None:
+        watcher = getattr(self.services, "runtime_watcher", None)
+        notifications = getattr(self.services, "notification_center", None)
+        if watcher is None:
+            return
+        for event in watcher.poll():
+            payload = {key: value for key, value in event.items() if key not in {"type", "message"}}
+            self._emit_event(str(event.get("type", "runtime_event")), **payload)
+            if notifications is not None and event.get("message"):
+                notifications.enqueue(str(event["message"]), kind=str(event.get("type", "runtime")))
 
     @staticmethod
     def _build_default_session_id() -> str:

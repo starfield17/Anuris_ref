@@ -4,7 +4,7 @@ import shlex
 
 
 def register_event_commands(dispatcher) -> None:
-    dispatcher._register("hooks", "Manage local hook commands for runtime events.", "/hooks [list|add|remove|run]", lambda args: _handle_hooks(dispatcher, args))
+    dispatcher._register("hooks", "Manage local hook commands for runtime events.", "/hooks [list|add|remove|run|test]", lambda args: _handle_hooks(dispatcher, args))
 
 
 def _handle_hooks(dispatcher, args: str) -> None:
@@ -45,4 +45,14 @@ def _handle_hooks(dispatcher, args: str) -> None:
                 rendered.append(f"  stderr: {item['stderr']}")
         dispatcher.ui.display_message("\n".join(rendered), style="cyan")
         return
-    dispatcher.ui.display_message("Usage: /hooks [list|add|remove|run]", style="yellow")
+    if action == "test":
+        if len(parts) < 2:
+            dispatcher.ui.display_message("Usage: /hooks test <event>", style="yellow")
+            return
+        results = manager.run(parts[1], {"manual": True, "test": True, "source": "hooks test"})
+        if not results:
+            dispatcher.ui.display_message("No hooks matched.", style="yellow")
+            return
+        dispatcher.ui.display_message("\n".join(f"- {item['command']} -> {item['returncode']}" for item in results), style="cyan")
+        return
+    dispatcher.ui.display_message("Usage: /hooks [list|add|remove|run|test]", style="yellow")

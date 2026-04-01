@@ -4,9 +4,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from anuris.config import ConfigManager
 from anuris.config import Config
+from anuris.debug_server import DebugSessionManager
 from anuris.session import ChatSession
 
 
@@ -188,6 +190,35 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertIn("Theme switched to claude", response.output_text)
         self.assertEqual(self.session.services.settings_manager.runtime.theme, "claude")
 
+    def test_runtime_control_commands_update_settings(self):
+        response = self.session.handle_input("/effort high")
+        self.assertIn("Set effort level to high", response.output_text)
+        self.assertEqual(self.session.services.settings_manager.runtime.effort_level, "high")
+
+        response = self.session.handle_input("/fast on")
+        self.assertIn("Fast mode ON", response.output_text)
+        self.assertTrue(self.session.services.settings_manager.runtime.fast_mode)
+
+        response = self.session.handle_input("/statusline format model cwd session")
+        self.assertIn("Updated statusline format", response.output_text)
+        self.assertEqual(self.session.services.settings_manager.runtime.statusline_format, "model cwd session")
+
+        response = self.session.handle_input("/sandbox-toggle read-only")
+        self.assertIn("Sandbox mode set to read-only", response.output_text)
+        self.assertEqual(self.session.services.settings_manager.runtime.sandbox_mode, "read-only")
+
+        response = self.session.handle_input('/sandbox-toggle exclude "npm run test"')
+        self.assertIn('Added "npm run test"', response.output_text)
+        self.assertIn("npm run test", self.session.services.settings_manager.runtime.excluded_commands)
+
+    def test_keybindings_template_command_persists_path(self):
+        keybindings_path = self.workspace / "bindings.toml"
+        response = self.session.handle_input(f"/keybindings template {keybindings_path}")
+        self.assertIn("Keybindings template ready", response.output_text)
+        self.assertTrue(keybindings_path.exists())
+        self.assertIn("submit", keybindings_path.read_text(encoding="utf-8"))
+        self.assertEqual(self.session.services.settings_manager.runtime.keybindings_path, str(keybindings_path.resolve()))
+
     def test_picker_commands_select_theme_model_output_style_and_session(self):
         self.session.ui.select_option = lambda title, options, default_index=0: "dark" if title == "theme" else options[-1]
 
@@ -339,6 +370,9 @@ class CommandDispatcherTests(unittest.TestCase):
         response = self.session.handle_input("/hooks run tool_called")
         self.assertIn("hook-fired", response.output_text)
 
+        response = self.session.handle_input("/hooks test tool_called")
+        self.assertIn("printf hook-fired", response.output_text)
+
     def test_review_and_plan_commands_use_prompt_execution(self):
         review_session = ChatSession(
             Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
@@ -449,11 +483,23 @@ class CommandDispatcherTests(unittest.TestCase):
         persistent.handle_input("/theme dark")
         persistent.handle_input("/output-style plain")
         persistent.handle_input("/vim on")
+        persistent.handle_input("/effort high")
+        persistent.handle_input("/fast on")
+        persistent.handle_input("/statusline off")
+        persistent.handle_input("/sandbox-toggle read-only")
+        persistent.handle_input('/sandbox-toggle exclude "npm run test"')
+        persistent.handle_input(f"/keybindings path {self.workspace / 'bindings.toml'}")
 
         loaded = manager.load_config()
         self.assertEqual(loaded.theme, "dark")
         self.assertEqual(loaded.output_style, "plain")
         self.assertTrue(loaded.vim_mode)
+        self.assertEqual(loaded.effort_level, "high")
+        self.assertTrue(loaded.fast_mode)
+        self.assertFalse(loaded.statusline_enabled)
+        self.assertEqual(loaded.sandbox_mode, "read-only")
+        self.assertEqual(loaded.excluded_commands, ["npm run test"])
+        self.assertIn("bindings.toml", loaded.keybindings_path)
 
         restored = ChatSession(
             loaded,
@@ -465,6 +511,11 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertEqual(restored.services.settings_manager.runtime.theme, "dark")
         self.assertEqual(restored.services.settings_manager.runtime.output_style, "plain")
         self.assertTrue(restored.services.settings_manager.runtime.vim_mode)
+        self.assertEqual(restored.services.settings_manager.runtime.effort_level, "high")
+        self.assertTrue(restored.services.settings_manager.runtime.fast_mode)
+        self.assertFalse(restored.services.settings_manager.runtime.statusline_enabled)
+        self.assertEqual(restored.services.settings_manager.runtime.sandbox_mode, "read-only")
+        self.assertEqual(restored.services.settings_manager.runtime.excluded_commands, ["npm run test"])
 
     def test_agents_command_drives_team_inbox_and_governance(self):
         session = ChatSession(
@@ -475,6 +526,7 @@ class CommandDispatcherTests(unittest.TestCase):
         )
 
         status = session.handle_input("/agents")
+        self.assertIn("Team dashboard:", status.output_text)
         self.assertIn("Team runtime:", status.output_text)
         self.assertIn(".anuris_team", status.output_text)
 
@@ -521,3 +573,65 @@ class CommandDispatcherTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertIn('"status": "approved"', shutdown_status)
+
+    def test_agents_ps_and_claim_next_include_task_state(self):
+        session = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="teamps",
+        )
+        session.services.task_manager.create("review docs")
+        ps = session.handle_input("/agents ps")
+        self.assertIn("lead:", ps.output_text)
+
+        claimed = session.handle_input("/agents claim-next alice")
+        self.assertIn('"owner": "alice"', claimed.output_text)
+        self.assertIn('"status": "in_progress"', claimed.output_text)
+
+    def test_sandbox_excluded_command_blocks_bash_tool(self):
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("bash", '{"command":"npm run test"}')]}}]},
+                {"choices": [{"message": {"content": "Observed the local sandbox restriction."}}]},
+            ]
+        )
+        session = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=model,
+            workspace_root=self.workspace,
+            session_id="sandboxcmd",
+        )
+        session.handle_input('/sandbox-toggle exclude "npm run test"')
+        response = session.handle_input("Run the test command.")
+        self.assertIn("Observed the local sandbox restriction.", response.final_text)
+        tool_messages = [str(message.content) for message in session.session_store.messages if message.role == "tool"]
+        self.assertTrue(any("Command blocked by local sandbox exclude rules." in message for message in tool_messages))
+
+    def test_thinkback_commands_list_show_and_replay(self):
+        debug_dir = self.workspace / ".debug_runs"
+        manager = DebugSessionManager(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            workspace_root=self.workspace,
+            debug_dir=debug_dir,
+            model_factory=lambda config: FakeModel([]),
+        )
+        manager.create_session({"session_id": "trace1"})
+        manager.submit_message("trace1", {"message": "/theme dark"})
+
+        session = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel([]),
+            workspace_root=self.workspace,
+            session_id="thinkbackcmd",
+        )
+        with patch("anuris.commands.CommandDispatcher._debug_runs_dir", return_value=debug_dir):
+            listed = session.handle_input("/thinkback list")
+            self.assertIn("trace1", listed.output_text)
+
+            shown = session.handle_input("/thinkback show trace1")
+            self.assertIn("/theme dark", shown.output_text)
+            self.assertIn("Theme set to dark", shown.output_text)
+
+            replayed = session.handle_input("/thinkback-play trace1")
+            self.assertIn("Replayed trace1", replayed.output_text)

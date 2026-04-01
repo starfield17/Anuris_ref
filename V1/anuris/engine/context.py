@@ -20,11 +20,23 @@ class PermissionContext:
 
     mode: str = "default"
     allowed_tools: Optional[set[str]] = None
+    sandbox_mode: str = "workspace-write"
+    excluded_commands: tuple[str, ...] = ()
 
     def permits_tool(self, tool_name: str) -> bool:
         if self.allowed_tools is None:
             return True
         return tool_name in self.allowed_tools
+
+    def permits_command(self, command: str) -> bool:
+        normalized = command.strip().lower()
+        if not normalized:
+            return True
+        for pattern in self.excluded_commands:
+            token = str(pattern or "").strip().lower()
+            if token and token in normalized:
+                return False
+        return True
 
 
 @dataclass
@@ -44,6 +56,8 @@ class SessionServices:
     context_files: Any
     usage_tracker: Any
     memory_manager: Any = None
+    notification_center: Any = None
+    runtime_watcher: Any = None
 
 
 @dataclass
