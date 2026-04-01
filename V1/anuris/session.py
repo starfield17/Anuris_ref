@@ -17,6 +17,8 @@ from .model import ChatModel
 from .prompts import prompt_manager
 from .services import (
     ContextFileTracker,
+    ContextVisualizer,
+    DiagnosticsService,
     HookManager,
     MCPManager,
     MemoryManager,
@@ -24,6 +26,7 @@ from .services import (
     PermissionManager,
     PluginManager,
     RuntimeWatcher,
+    WorkspaceSearch,
     SessionCatalog,
     SettingsManager,
     UsageTracker,
@@ -148,6 +151,8 @@ class ChatSession:
         self.session_store = SessionStore(system_prompt, self.workspace_root, self.session_id)
         self.history = self.session_store
         self.services = self._build_services(self.workspace_root)
+        self.services.context_visualizer = ContextVisualizer(self)
+        self.services.diagnostics = DiagnosticsService(self)
         self.tool_registry = ToolRegistry(build_default_tools())
         self.engine = QueryEngine(
             model=self.model,
@@ -207,6 +212,7 @@ class ChatSession:
                 round_count=response.round_count,
             )
             self._poll_runtime_watchers()
+            self._flush_runtime_notices("post_turn")
             return response
         except Exception as exc:
             self._emit_event("request_failed", request_id=request_id, request_kind=request_kind, error=str(exc))
@@ -287,30 +293,46 @@ class ChatSession:
         event_type = event.get("type", "")
         if event_type == "tool_called":
             self.services.usage_tracker.record_tool_call()
-        if not self.is_headless:
-            if event_type == "agent_round_started":
-                if hasattr(self.ui, "display_activity_event"):
-                    self.ui.display_activity_event("agent round", str(event.get("round", "")), tone="info")
-                else:
-                    self.ui.display_message(f"[agent] round {event.get('round')}", style="cyan")
-            elif event_type == "tool_called":
-                if hasattr(self.ui, "display_activity_event"):
-                    self.ui.display_activity_event("tool", str(event.get("tool_name", "")), tone="warning")
-                else:
-                    self.ui.display_message(f"[tool] {event.get('tool_name')}", style="yellow")
+        notifications = getattr(self.services, "notification_center", None)
+        if notifications is not None:
+            if event_type == "tool_called":
+                notifications.enqueue(
+                    f"Tool called: {event.get('tool_name', '')}",
+                    kind="tool_called",
+                    tone="warning",
+                    channel="tools",
+                    priority=30,
+                    defer_until="post_turn",
+                    collapse_key=f"tool_called:{event.get('tool_name', '')}",
+                    metadata=event,
+                )
             elif event_type == "tool_result":
-                preview = str(event.get("content", ""))[:240]
-                if hasattr(self.ui, "display_activity_event"):
-                    tone = "danger" if event.get("is_error") else "success"
-                    self.ui.display_activity_event("tool result", preview, tone=tone)
-                else:
-                    style = "red" if event.get("is_error") else "green"
-                    self.ui.display_message(f"[tool-result] {preview}", style=style)
+                notifications.enqueue(
+                    str(event.get("content", ""))[:240] or "tool result",
+                    kind="tool_result",
+                    tone="danger" if event.get("is_error") else "success",
+                    channel="tools",
+                    priority=70 if event.get("is_error") else 35,
+                    defer_until="post_turn",
+                    collapse_key="tool_result:error" if event.get("is_error") else "",
+                    metadata=event,
+                )
+                if event.get("is_error"):
+                    notifications.enqueue_event(
+                        "tool_rejected",
+                        {"message": str(event.get("content", ""))[:240], **event},
+                    )
             elif event_type == "compact_boundary":
-                if hasattr(self.ui, "display_activity_event"):
-                    self.ui.display_activity_event("agent", "context compacted", tone="info")
-                else:
-                    self.ui.display_message("[agent] context compacted", style="magenta")
+                notifications.enqueue(
+                    "Context compacted into a working summary.",
+                    kind="compact_boundary",
+                    tone="info",
+                    channel="context",
+                    priority=55,
+                    defer_until="post_turn",
+                    collapse_key="context:compact",
+                    metadata=event,
+                )
         self._emit_event(event_type, **{key: value for key, value in event.items() if key != "type"})
 
     def _attach_paths(self, attachment_paths: List[str]) -> List[Any]:
@@ -323,16 +345,22 @@ class ChatSession:
 
     def _emit_event(self, event_type: str, **payload: Any) -> None:
         hook_manager = getattr(self.services, "hook_manager", None)
+        notifications = getattr(self.services, "notification_center", None)
         if hook_manager is not None:
             hook_results = hook_manager.run(event_type, {"type": event_type, **payload})
-            if not self.is_headless:
-                for result in hook_results:
-                    if result["returncode"] != "0":
-                        message = result["stderr"] or result["stdout"] or "(no output)"
-                        if hasattr(self.ui, "display_activity_event"):
-                            self.ui.display_activity_event(f"hook:{event_type}", message, tone="danger")
-                        else:
-                            self.ui.display_message(f"[hook:{event_type}] {message}", style="red")
+            for result in hook_results:
+                if result["returncode"] != "0" and notifications is not None:
+                    message = result["stderr"] or result["stdout"] or "(no output)"
+                    notifications.enqueue_event(
+                        "hook_failed",
+                        {
+                            "message": f"hook:{event_type} {message}",
+                            "event": event_type,
+                            "command": result["command"],
+                            "stderr": result["stderr"],
+                            "stdout": result["stdout"],
+                        },
+                    )
         if not self.event_callback:
             return
         self.event_callback({"type": event_type, **payload})
@@ -361,6 +389,8 @@ class ChatSession:
         previous_permission_mode = self.services.permission_manager.mode
         previous_settings = self.services.settings_manager.runtime
         self.services = self._build_services(self.workspace_root)
+        self.services.context_visualizer = ContextVisualizer(self)
+        self.services.diagnostics = DiagnosticsService(self)
         self.services.permission_manager.set_mode(previous_permission_mode)
         self.services.settings_manager.runtime = previous_settings
         self.session_store.retarget_workspace(self.workspace_root)
@@ -398,6 +428,9 @@ class ChatSession:
             memory_manager=MemoryManager(workspace_root),
             notification_center=NotificationCenter(),
             runtime_watcher=RuntimeWatcher(task_manager),
+            context_visualizer=None,
+            search_service=WorkspaceSearch(workspace_root, Path.home() / ".anuris_debug_runs"),
+            diagnostics=None,
         )
 
     def _build_team_runtime(self, workspace_root: Path) -> SessionTeamRuntime:
@@ -444,7 +477,17 @@ class ChatSession:
             payload = {key: value for key, value in event.items() if key not in {"type", "message"}}
             self._emit_event(str(event.get("type", "runtime_event")), **payload)
             if notifications is not None and event.get("message"):
-                notifications.enqueue(str(event["message"]), kind=str(event.get("type", "runtime")))
+                notifications.enqueue_event(str(event.get("type", "runtime")), dict(event))
+
+    def _flush_runtime_notices(self, stage: str) -> None:
+        if self.is_headless:
+            return
+        notifications = getattr(self.services, "notification_center", None)
+        if notifications is None:
+            return
+        ready = [item.to_dict() for item in notifications.flush_ready(stage)]
+        if ready and hasattr(self.ui, "display_notices"):
+            self.ui.display_notices(ready)
 
     @staticmethod
     def _build_default_session_id() -> str:

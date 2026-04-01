@@ -58,6 +58,9 @@ class SessionServices:
     memory_manager: Any = None
     notification_center: Any = None
     runtime_watcher: Any = None
+    context_visualizer: Any = None
+    search_service: Any = None
+    diagnostics: Any = None
 
 
 @dataclass

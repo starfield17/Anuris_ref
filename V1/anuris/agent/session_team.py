@@ -43,7 +43,7 @@ class SessionTeamRuntime:
             include_team_ops=True,
             include_compaction=False,
             hot_swap_tools=False,
-            teammate_poll_interval_sec=1,
+            teammate_poll_interval_sec=0.2,
             teammate_idle_timeout_sec=30,
             teammate_max_runtime_sec=300,
         )
@@ -146,6 +146,43 @@ class SessionTeamRuntime:
         lines.append(
             f"- lead: inbox={self._count_inbox('lead')} tasks={owner_counts.get('lead', 0)} plans={self.summary_counts()['plans_pending']}"
         )
+        return "\n".join(lines)
+
+    def governance_snapshot(self) -> dict[str, Any]:
+        plan_requests = getattr(self.team_manager, "_plan_requests", {})
+        shutdown_requests = getattr(self.team_manager, "_shutdown_requests", {})
+        pending_plans = [
+            {"request_id": request_id, **payload}
+            for request_id, payload in sorted(plan_requests.items())
+            if str(payload.get("status", "")) == "pending"
+        ]
+        pending_shutdowns = [
+            {"request_id": request_id, **payload}
+            for request_id, payload in sorted(shutdown_requests.items())
+            if str(payload.get("status", "")) == "pending"
+        ]
+        return {
+            "lead_inbox": self._count_inbox("lead"),
+            "pending_plans": pending_plans,
+            "pending_shutdowns": pending_shutdowns,
+        }
+
+    def render_governance(self) -> str:
+        snapshot = self.governance_snapshot()
+        lines = ["Governance:"]
+        lines.append(f"- lead_inbox: {snapshot['lead_inbox']}")
+        lines.append(f"- plans_pending: {len(snapshot['pending_plans'])}")
+        if snapshot["pending_plans"]:
+            for item in snapshot["pending_plans"][:5]:
+                lines.append(
+                    f"  - plan {item['request_id']} from={item.get('from', '?')} status={item.get('status', 'pending')}"
+                )
+        lines.append(f"- shutdowns_pending: {len(snapshot['pending_shutdowns'])}")
+        if snapshot["pending_shutdowns"]:
+            for item in snapshot["pending_shutdowns"][:5]:
+                lines.append(
+                    f"  - shutdown {item['request_id']} target={item.get('target', '?')} status={item.get('status', 'pending')}"
+                )
         return "\n".join(lines)
 
     def claim_next(self, owner: str = "lead") -> str:

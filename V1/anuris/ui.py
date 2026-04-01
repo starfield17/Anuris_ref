@@ -385,6 +385,82 @@ class ChatUI:
             message.append(detail, style=self._palette().muted)
         self.console.print(message)
 
+    def display_notices(self, notices: List[Dict[str, Any]]) -> None:
+        if not notices:
+            return
+        if self._is_plain_output():
+            for notice in notices:
+                label = f"[{notice.get('channel', 'runtime')}/{notice.get('tone', 'info')}]"
+                self.display_message(f"{label} {notice.get('display_message', notice.get('message', ''))}")
+            return
+
+        palette = self._palette()
+        table = Table(box=box.SIMPLE_HEAVY, border_style=palette.border, pad_edge=False)
+        table.add_column("Channel", style=palette.accent_soft, width=14)
+        table.add_column("Tone", style=palette.tool, width=10)
+        table.add_column("Notice", style=palette.assistant)
+        table.add_column("Count", style=palette.muted, width=6, justify="right")
+        for notice in notices:
+            table.add_row(
+                str(notice.get("channel", "runtime")),
+                str(notice.get("tone", "info")),
+                str(notice.get("display_message", notice.get("message", ""))),
+                str(notice.get("count", 1)),
+            )
+        self.console.print(
+            Panel(
+                table,
+                title="status notices",
+                title_align="left",
+                border_style=palette.border,
+                box=box.ROUNDED,
+            )
+        )
+
+    def display_session_preview(self, messages: List[Dict[str, Any]], title: str = "session preview") -> None:
+        if self._is_plain_output():
+            for item in messages:
+                self.display_message(f"{item.get('label', 'message')}: {item.get('preview', '')}")
+            return
+        palette = self._palette()
+        lines = []
+        for item in messages:
+            lines.append(f"{item.get('label', 'message')}: {item.get('preview', '')}")
+        self.console.print(
+            Panel.fit(
+                "\n".join(lines) or "(empty)",
+                title=title,
+                title_align="left",
+                border_style=palette.border,
+                box=box.ROUNDED,
+            )
+        )
+
+    def display_runtime_dashboard(self, sections: List[Dict[str, Any]], title: str = "runtime dashboard") -> None:
+        if self._is_plain_output():
+            for section in sections:
+                self.display_message(str(section.get("title", "section")))
+                for line in section.get("lines", []):
+                    self.display_message(f"- {line}")
+                self.display_message("")
+            return
+        palette = self._palette()
+        table = Table(box=box.SIMPLE_HEAVY, border_style=palette.border, pad_edge=False)
+        table.add_column("Section", style=palette.accent_soft, width=16)
+        table.add_column("Details", style=palette.assistant)
+        for section in sections:
+            lines = section.get("lines", [])
+            table.add_row(str(section.get("title", "section")), "\n".join(str(line) for line in lines) or "(empty)")
+        self.console.print(
+            Panel(
+                table,
+                title=title,
+                title_align="left",
+                border_style=palette.border,
+                box=box.ROUNDED,
+            )
+        )
+
     def display_attachments(self, attachments: List[Dict[str, Any]]) -> None:
         if not attachments:
             return

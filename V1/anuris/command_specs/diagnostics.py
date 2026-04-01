@@ -5,11 +5,14 @@ import shutil
 import subprocess
 import sys
 
+from ..services import DiagnosticsService
+
 
 def register_diagnostic_commands(dispatcher) -> None:
     dispatcher._register("usage", "Show local session usage and elapsed time.", "/usage", lambda args: _handle_usage(dispatcher, args))
     dispatcher._register("stats", "Show local runtime, session, and repository stats.", "/stats", lambda args: _handle_stats(dispatcher, args))
     dispatcher._register("doctor", "Run local environment and workspace health checks.", "/doctor", lambda args: _handle_doctor(dispatcher, args))
+    dispatcher._register("diagnostics", "Show continuous runtime diagnostics and warnings.", "/diagnostics [warnings]", lambda args: _handle_diagnostics(dispatcher, args))
 
 
 def _handle_usage(dispatcher, args: str) -> None:
@@ -45,6 +48,7 @@ def _handle_stats(dispatcher, args: str) -> None:
         f"- team_members: {team_summary.get('members', 0)}",
         f"- team_inbox: {team_summary.get('lead_inbox', 0)}",
         f"- team_plans_pending: {team_summary.get('plans_pending', 0)}",
+        f"- recent_warnings: {len(DiagnosticsService(session).warnings())}",
     ]
     dispatcher.ui.display_message("\n".join(lines), style="cyan")
 
@@ -91,6 +95,16 @@ def _handle_doctor(dispatcher, args: str) -> None:
         _append_check(lines, "git_repository", False, str(exc))
 
     dispatcher.ui.display_message("\n".join(lines), style="cyan")
+
+
+def _handle_diagnostics(dispatcher, args: str) -> None:
+    action = (args.strip().lower() or "show")
+    service = DiagnosticsService(dispatcher.session)
+    if action == "warnings":
+        warnings = service.warnings()
+        dispatcher.ui.display_message("\n".join(f"- {item}" for item in warnings) if warnings else "No warnings.", style="cyan")
+        return
+    dispatcher.ui.display_message(service.render(), style="cyan")
 
 
 def _append_check(lines: list[str], label: str, ok: bool, detail: str) -> None:

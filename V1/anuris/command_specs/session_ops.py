@@ -13,6 +13,7 @@ def register_session_ops_commands(dispatcher) -> None:
     dispatcher._register("rename", "Rename the current session.", "/rename [name]", lambda args: _handle_rename(dispatcher, args))
     dispatcher._register("export", "Export the current conversation to a text file.", "/export [filename]", lambda args: _handle_export(dispatcher, args))
     dispatcher._register("copy", "Copy the latest assistant response or code block.", "/copy [full|code [index]|message [index]]", lambda args: _handle_copy(dispatcher, args))
+    dispatcher._register("message", "Inspect, copy, or export a message by absolute index.", "/message [inspect|copy|export] <index>", lambda args: _handle_message(dispatcher, args))
 
 
 def _handle_rename(dispatcher, args: str) -> None:
@@ -77,6 +78,49 @@ def _handle_copy(dispatcher, args: str) -> None:
         return
 
     dispatcher.ui.display_message("Usage: /copy [full|code [index]|message [index]]", style="yellow")
+
+
+def _handle_message(dispatcher, args: str) -> None:
+    parts = args.split()
+    if len(parts) < 2:
+        dispatcher.ui.display_message("Usage: /message [inspect|copy|export] <index>", style="yellow")
+        return
+    action = parts[0].lower()
+    index = _parse_index(parts[1])
+    if index is None:
+        dispatcher.ui.display_message("Message index must be a positive integer.", style="yellow")
+        return
+    try:
+        message = dispatcher.session.session_store.message_at(index)
+    except IndexError:
+        dispatcher.ui.display_message("Message index out of range.", style="yellow")
+        return
+
+    text = extract_text_content(message.content).strip() or "(empty)"
+    if action == "inspect":
+        lines = [
+            f"index: {index}",
+            f"role: {message.role}",
+            f"kind: {message.kind}",
+            f"name: {message.name or ''}",
+            f"tool_call_id: {message.tool_call_id or ''}",
+            "content:",
+            text,
+        ]
+        if message.reasoning:
+            lines.extend(["", "reasoning:", message.reasoning])
+        dispatcher.ui.display_message("\n".join(lines), style="cyan")
+        return
+    if action == "copy":
+        dispatcher.ui.display_message(_copy_with_fallback(text, f"message-{index}.md"), style="green")
+        return
+    if action == "export":
+        filename = f"message-{index}.txt"
+        path = (dispatcher.session.workspace_root / filename).resolve()
+        path.write_text(text + "\n", encoding="utf-8")
+        dispatcher.ui.display_message(f"Exported message {index} to {path}", style="green")
+        return
+    dispatcher.ui.display_message("Usage: /message [inspect|copy|export] <index>", style="yellow")
 
 
 def _default_export_filename(session_store) -> str:

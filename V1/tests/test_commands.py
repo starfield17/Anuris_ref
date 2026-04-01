@@ -415,6 +415,101 @@ class CommandDispatcherTests(unittest.TestCase):
         response = self.session.handle_input("/memory clear")
         self.assertIn("cleared", response.output_text.lower())
 
+    def test_status_notice_and_search_commands(self):
+        searchable = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="searchable",
+        )
+        searchable.session_store.add_user_message("alpha session hit")
+        searchable.session_store.add_assistant_message("search content")
+
+        debug_root = self.workspace / ".debug_runs"
+        trace_dir = debug_root / "sessions" / "trace1"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / "session.json").write_text(
+            json.dumps({"session_id": "trace1", "session_name": "alpha trace", "updated_at": "2026-04-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        (trace_dir / "transcript.md").write_text("# Trace\n\nalpha trace body\n", encoding="utf-8")
+        (trace_dir / "events.jsonl").write_text("", encoding="utf-8")
+        self.session.services.search_service.debug_root = debug_root
+        (self.workspace / "alpha-export.txt").write_text("alpha export body", encoding="utf-8")
+
+        center = self.session.services.notification_center
+        center.enqueue("rate limit warning", tone="warning", channel="runtime", collapse_key="runtime:rate")
+        center.enqueue("rate limit still active", tone="warning", channel="runtime", collapse_key="runtime:rate")
+
+        notices = self.session.handle_input("/notices list")
+        self.assertIn("latest: rate limit still active", notices.output_text)
+
+        search_all = self.session.handle_input("/search alpha")
+        self.assertIn("[session] searchable", search_all.output_text)
+        self.assertIn("[trace] trace1", search_all.output_text)
+        self.assertIn("[export] alpha-export", search_all.output_text)
+
+        history = self.session.handle_input("/history-search alpha")
+        self.assertIn("[session] searchable", history.output_text)
+
+        trace = self.session.handle_input("/trace-search alpha")
+        self.assertIn("[trace] trace1", trace.output_text)
+
+        quickopen = self.session.handle_input("/quickopen searchable")
+        self.assertIn("Quick-open resumed session searchable", quickopen.output_text)
+
+        status = self.session.handle_input("/status")
+        self.assertIn("Session", status.output_text)
+        self.assertIn("Runtime", status.output_text)
+        self.assertIn("Diagnostics", status.output_text)
+        self.assertIn("Tools:", status.output_text)
+
+    def test_context_diff_message_tasks_and_diagnostics_commands(self):
+        self.session.session_store.add_user_message("hello")
+        self.session.session_store.add_assistant_message("```python\nprint(1)\n```", reasoning="first pass")
+        self.session.session_store.add_tool_result(
+            "write_file",
+            "call_1",
+            "updated file",
+            metadata={
+                "path": "note.txt",
+                "diff": "--- a/note.txt\n+++ b/note.txt\n@@\n-hello\n+hello world\n",
+                "summary": "updated note.txt",
+            },
+        )
+
+        self.session.services.task_manager.create("prepare patch")
+        self.session.services.task_manager.create("review patch")
+        self.session.services.task_manager.update(1, status="in_progress", owner="ghost")
+        self.session.services.task_manager.update(2, add_blocked_by=[1])
+        self.session.team_runtime.team_manager.submit_plan("alice", "1. inspect\n2. report")
+        self.session.team_runtime.team_manager.request_shutdown("alice")
+
+        context_viz = self.session.handle_input("/context viz")
+        self.assertIn("Context visualization:", context_viz.output_text)
+        self.assertIn("conversation:", context_viz.output_text)
+
+        diff_recent = self.session.handle_input("/diff recent")
+        self.assertIn("note.txt", diff_recent.output_text)
+        self.assertIn("+++ b/note.txt", diff_recent.output_text)
+
+        inspect_message = self.session.handle_input("/message inspect 3")
+        self.assertIn("role: assistant", inspect_message.output_text)
+        self.assertIn("reasoning:", inspect_message.output_text)
+
+        export_message = self.session.handle_input("/message export 3")
+        self.assertIn("Exported message 3", export_message.output_text)
+        self.assertTrue((self.workspace / "message-3.txt").exists())
+
+        tasks_board = self.session.handle_input("/tasks board")
+        self.assertIn("Task board:", tasks_board.output_text)
+        self.assertIn("Resume candidate:", tasks_board.output_text)
+        self.assertIn("Governance:", tasks_board.output_text)
+        self.assertIn("plans_pending:", tasks_board.output_text)
+
+        diagnostics = self.session.handle_input("/diagnostics warnings")
+        self.assertIn("owner missing from roster: ghost", diagnostics.output_text)
+
     def test_rename_and_export_commands(self):
         self.session.session_store.add_user_message("Refactor the runtime session layer for Claude parity")
         self.session.session_store.add_assistant_message("Starting with command and session metadata changes.")

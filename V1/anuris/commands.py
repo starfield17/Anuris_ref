@@ -51,7 +51,7 @@ class CommandDispatcher:
         self._register("agent", "Enable, disable, or inspect tool mode.", "/agent [on|off|status]", self._handle_agent)
         self._register("compact", "Compact older context into a summary boundary.", "/compact [focus]", self._handle_compact)
         self._register("todos", "Render the in-memory todo board.", "/todos", self._handle_todos)
-        self._register("tasks", "Render the persistent task board.", "/tasks", self._handle_tasks)
+        self._register("tasks", "Render the persistent task board.", "/tasks [board|pending|blocked|resume]", self._handle_tasks)
         self._register("skills", "Render discovered skill files.", "/skills", self._handle_skills)
         self._register("status", "Show session, git, context, and runtime status.", "/status", self._handle_status)
         self._register("model", "Show, pick, or update the active model.", "/model [name|pick]", self._handle_model)
@@ -98,6 +98,13 @@ class CommandDispatcher:
         )
         self._register("thinkback", "List, inspect, or show saved debug traces.", "/thinkback [list|latest|show <id>]", self._handle_thinkback)
         self._register("thinkback-play", "Replay a saved debug trace into a fresh session.", "/thinkback-play <id>", self._handle_thinkback_play)
+        self._register("notices", "Inspect or clear queued runtime notices.", "/notices [list|recent|clear]", self._handle_notices)
+        self._register("search", "Search sessions, traces, and exports.", "/search <query>", self._handle_search)
+        self._register("history-search", "Search saved session transcripts.", "/history-search <query>", self._handle_history_search)
+        self._register("trace-search", "Search saved thinkback/debug transcripts.", "/trace-search <query>", self._handle_trace_search)
+        self._register("quickopen", "Quick-open a session or trace by id/title.", "/quickopen <query>", self._handle_quickopen)
+        self._register("thinking", "Show or toggle provider reasoning mode.", "/thinking [on|off|toggle|status]", self._handle_thinking)
+        self._register("picker", "Open a small runtime picker for common settings.", "/picker [model|theme|output|thinking|effort|fast]", self._handle_picker)
         register_analysis_commands(self)
         register_diagnostic_commands(self)
         register_event_commands(self)
@@ -274,8 +281,46 @@ class CommandDispatcher:
         self.ui.display_message(self.session.services.todo_manager.render(), style="cyan")
 
     def _handle_tasks(self, args: str) -> None:
-        del args
-        self.ui.display_message(self.session.services.task_manager.list_all(), style="cyan")
+        action = (args.strip().lower() or "board")
+        manager = self.session.services.task_manager
+        if action in {"board", "show"}:
+            board = manager.render_board()
+            resumable = manager.resumable_task("lead")
+            lines = [board]
+            if resumable:
+                lines.extend(
+                    [
+                        "",
+                        "Resume candidate:",
+                        f"- #{resumable['id']} {resumable.get('subject', '')} status={resumable.get('status', '')} owner={resumable.get('owner', '') or 'unowned'}",
+                    ]
+                )
+            if hasattr(self.session, "team_runtime"):
+                lines.extend(["", self.session.team_runtime.render_governance()])
+            self.ui.display_message("\n".join(lines), style="cyan")
+            return
+        if action == "pending":
+            pending = manager.list_by_status("pending")
+            self.ui.display_message(
+                "\n".join(f"- #{item['id']} {item.get('subject', '')}" for item in pending) if pending else "No pending tasks.",
+                style="cyan",
+            )
+            return
+        if action == "blocked":
+            blocked = [item for item in manager.list_records() if item.get("blockedBy") and item.get("status") != "completed"]
+            self.ui.display_message(
+                "\n".join(f"- #{item['id']} {item.get('subject', '')} blockedBy={item.get('blockedBy')}" for item in blocked) if blocked else "No blocked tasks.",
+                style="cyan",
+            )
+            return
+        if action.startswith("resume"):
+            resumable = manager.resumable_task()
+            if not resumable:
+                self.ui.display_message("No resumable tasks.", style="yellow")
+                return
+            self.ui.display_message(json.dumps(resumable, ensure_ascii=False, indent=2), style="green")
+            return
+        self.ui.display_message("Usage: /tasks [board|pending|blocked|resume]", style="yellow")
 
     def _handle_skills(self, args: str) -> None:
         del args
@@ -283,27 +328,78 @@ class CommandDispatcher:
 
     def _handle_status(self, args: str) -> None:
         del args
+        diagnostics = self.session.services.diagnostics or None
+        diagnostic_snapshot = diagnostics.snapshot() if diagnostics else {}
+        context_snapshot = self.session.services.context_visualizer.analyze()
+        notice_summary = self.session.services.notification_center.summary_counts()
+        task_summary = self.session.services.task_manager.summary_counts()
+        team_summary = self.session.team_runtime.summary_counts() if hasattr(self.session, "team_runtime") else {}
         active_tools = ", ".join(sorted(self.session.tool_registry.by_name))
         git_summary = self._git_summary()
-        context_snapshot = self.session.services.context_files.snapshot()
-        lines = [
-            f"Session: {self.session.session_store.title or self.session.session_id}",
-            f"Model: {self.session.config.model}",
-            f"Base URL: {self.session.config.base_url}",
-            f"Workspace: {self.session.workspace_root}",
-            f"Tool mode: {'on' if self.session.agent_mode else 'off'}",
-            f"Permission mode: {self.session.services.permission_manager.mode}",
-            f"Sandbox mode: {self.session.services.settings_manager.runtime.sandbox_mode}",
-            f"Theme: {self.session.services.settings_manager.runtime.theme}",
-            f"Output style: {self.session.services.settings_manager.runtime.output_style}",
-            f"Effort: {self.session.services.settings_manager.runtime.effort_level}",
-            f"Fast mode: {self.session.services.settings_manager.runtime.fast_mode}",
-            f"Git: {git_summary}",
-            f"Context files: {context_snapshot['files']}",
-            f"Added dirs: {context_snapshot['added_dirs']}",
-            f"Tools: {active_tools}",
+        sections = [
+            {
+                "title": "Session",
+                "lines": [
+                    f"session={self.session.session_store.title or self.session.session_id}",
+                    f"model={self.session.config.model}",
+                    f"workspace={self.session.workspace_root}",
+                    f"git={git_summary}",
+                ],
+            },
+            {
+                "title": "Runtime",
+                "lines": [
+                    f"agent_mode={'on' if self.session.agent_mode else 'off'}",
+                    f"permission={self.session.services.permission_manager.mode}",
+                    f"sandbox={self.session.services.settings_manager.runtime.sandbox_mode}",
+                    f"theme={self.session.services.settings_manager.runtime.theme}",
+                    f"output={self.session.services.settings_manager.runtime.output_style}",
+                    f"effort={self.session.services.settings_manager.runtime.effort_level}",
+                    f"fast={self.session.services.settings_manager.runtime.fast_mode}",
+                ],
+            },
+            {
+                "title": "Context",
+                "lines": [
+                    f"approx_chars={context_snapshot['approx_chars']}",
+                    f"compact_boundaries={context_snapshot['compact_count']}",
+                    f"conversation_items={len(context_snapshot['groups']['conversation'])}",
+                    f"file_reads={len(context_snapshot['groups']['file_reads'])}",
+                    f"attachments={len(context_snapshot['groups']['attachments'])}",
+                ],
+            },
+            {
+                "title": "Tasks",
+                "lines": [
+                    f"total={task_summary['total']}",
+                    f"in_progress={task_summary['in_progress']}",
+                    f"pending={task_summary['pending']}",
+                    f"blocked={task_summary['blocked']}",
+                    f"team_members={team_summary.get('members', 0)} inbox={team_summary.get('lead_inbox', 0)} plans={team_summary.get('plans_pending', 0)}",
+                ],
+            },
+            {
+                "title": "Diagnostics",
+                "lines": [
+                    f"warnings={len(diagnostic_snapshot.get('warnings', []))}",
+                    f"queued_notices={notice_summary.get('queued', 0)}",
+                    f"background_tasks={diagnostic_snapshot.get('background_tasks', 0)}",
+                    f"hooks={diagnostic_snapshot.get('hooks', 0)} plugins={diagnostic_snapshot.get('plugins', 0)} mcp={diagnostic_snapshot.get('mcp_resources', 0)}",
+                ],
+            },
         ]
-        self.ui.display_message(Panel.fit("\n".join(lines), border_style="cyan"))
+        if hasattr(self.ui, "display_runtime_dashboard"):
+            self.ui.display_runtime_dashboard(sections, title="status")
+        else:
+            lines = []
+            for section in sections:
+                lines.append(f"{section['title']}:")
+                lines.extend(f"- {line}" for line in section["lines"])
+                lines.append("")
+            lines.append(f"Tools: {active_tools}")
+            self.ui.display_message(Panel.fit("\n".join(lines).strip(), border_style="cyan"))
+            return
+        self.ui.display_message(f"Tools: {active_tools}", style="cyan")
 
     def _handle_model(self, args: str) -> None:
         requested = args.strip()
@@ -457,7 +553,24 @@ class CommandDispatcher:
             return
         if action == "preview":
             session_id = parts[1] if len(parts) > 1 else self.session.services.session_catalog.latest_session_id()
-            self.ui.display_message(self.session.services.session_catalog.preview(session_id), style="cyan")
+            preview = self.session.services.session_catalog.preview(session_id)
+            snapshot = json.loads(self.session.services.session_catalog.snapshot_path(session_id).read_text(encoding="utf-8"))
+            messages = snapshot.get("messages", [])[-8:]
+            payload = []
+            for index, item in enumerate(messages, start=max(1, len(snapshot.get("messages", [])) - len(messages) + 1)):
+                role = str(item.get("role", "unknown"))
+                kind = str(item.get("kind", "message"))
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    preview_text = " ".join(str(block.get("text", block)) for block in content if isinstance(block, dict))
+                else:
+                    preview_text = str(content)
+                payload.append({"label": f"{index}:{role}:{kind}", "preview": preview_text.replace("\n", " ")[:180]})
+            if hasattr(self.ui, "display_session_preview"):
+                self.ui.display_session_preview(payload, title=f"session {session_id}")
+                self.ui.display_message(preview, style="cyan")
+            else:
+                self.ui.display_message(preview, style="cyan")
             return
         if action == "pick":
             sessions = self.session.services.session_catalog.list_sessions()
@@ -880,6 +993,123 @@ class CommandDispatcher:
             style="green",
         )
 
+    def _handle_notices(self, args: str) -> None:
+        action = (args.strip().lower() or "list")
+        center = self.session.services.notification_center
+        if action in {"list", "show"}:
+            self.ui.display_message(center.preview(), style="cyan")
+            return
+        if action == "recent":
+            recent = center.recent()
+            if not recent:
+                self.ui.display_message("No recent notices.", style="yellow")
+                return
+            self.ui.display_message(
+                "\n".join(
+                    f"- [{item['channel']}/{item['tone']}] {item.get('display_message', item['message'])}"
+                    for item in recent
+                ),
+                style="cyan",
+            )
+            return
+        if action == "clear":
+            removed = center.clear()
+            self.ui.display_message(f"Cleared {removed} queued notice(s).", style="green")
+            return
+        self.ui.display_message("Usage: /notices [list|recent|clear]", style="yellow")
+
+    def _handle_search(self, args: str) -> None:
+        query = args.strip()
+        if not query:
+            self.ui.display_message("Usage: /search <query>", style="yellow")
+            return
+        results = self.session.services.search_service.search_all(query)
+        self.ui.display_message(self._render_search_results(results), style="cyan")
+
+    def _handle_history_search(self, args: str) -> None:
+        query = args.strip()
+        if not query:
+            self.ui.display_message("Usage: /history-search <query>", style="yellow")
+            return
+        results = self.session.services.search_service.search_sessions(query)
+        self.ui.display_message(self._render_search_results(results), style="cyan")
+
+    def _handle_trace_search(self, args: str) -> None:
+        query = args.strip()
+        if not query:
+            self.ui.display_message("Usage: /trace-search <query>", style="yellow")
+            return
+        results = self.session.services.search_service.search_traces(query)
+        self.ui.display_message(self._render_search_results(results), style="cyan")
+
+    def _handle_quickopen(self, args: str) -> None:
+        query = args.strip()
+        if not query:
+            self.ui.display_message("Usage: /quickopen <query>", style="yellow")
+            return
+        matches = self.session.services.search_service.quickopen(query)
+        if not matches:
+            self.ui.display_message(f"No quick-open matches for: {query}", style="yellow")
+            return
+        first = matches[0]
+        if first.kind == "session":
+            snapshot = self.session.services.session_catalog.snapshot_path(first.source_id)
+            self.session.session_store.load_snapshot_path(snapshot)
+            self.ui.display_message(f"Quick-open resumed session {first.source_id}", style="green")
+            return
+        if first.kind == "trace":
+            self.ui.display_message(Path(first.path).read_text(encoding="utf-8"), style="cyan")
+            return
+        self.ui.display_message(self._render_search_results(matches), style="cyan")
+
+    def _handle_thinking(self, args: str) -> None:
+        action = (args.strip().lower() or "status")
+        if action == "status":
+            self.ui.display_message(f"reasoning: {self.session.config.reasoning}", style="cyan")
+            return
+        if action == "toggle":
+            self.session.config.reasoning = not bool(self.session.config.reasoning)
+        elif action in {"on", "off"}:
+            self.session.config.reasoning = action == "on"
+        else:
+            self.ui.display_message("Usage: /thinking [on|off|toggle|status]", style="yellow")
+            return
+        if self.session.config_manager is not None:
+            self.session.config_manager.save_config(reasoning=self.session.config.reasoning)
+        if hasattr(self.session.model, "config"):
+            self.session.model.config.reasoning = self.session.config.reasoning
+        self.ui.display_message(f"reasoning: {self.session.config.reasoning}", style="green")
+
+    def _handle_picker(self, args: str) -> None:
+        action = (args.strip().lower() or "theme")
+        if action == "model":
+            choice = self._choose_option("model", self._model_options(), default=self.session.config.model)
+            if choice:
+                self._handle_model(choice)
+            return
+        if action == "theme":
+            self._handle_theme("pick")
+            return
+        if action == "output":
+            self._handle_output_style("pick")
+            return
+        if action == "thinking":
+            choice = self._choose_option("thinking", ["on", "off"], default="on" if self.session.config.reasoning else "off")
+            if choice:
+                self._handle_thinking(choice)
+            return
+        if action == "effort":
+            choice = self._choose_option("effort", list(SUPPORTED_EFFORT_LEVELS), default=self.session.services.settings_manager.runtime.effort_level)
+            if choice:
+                self._handle_effort(choice)
+            return
+        if action == "fast":
+            choice = self._choose_option("fast", ["on", "off"], default="on" if self.session.services.settings_manager.runtime.fast_mode else "off")
+            if choice:
+                self._handle_fast(choice)
+            return
+        self.ui.display_message("Usage: /picker [model|theme|output|thinking|effort|fast]", style="yellow")
+
     def _reload_plugins(self) -> None:
         self.session.services.plugin_manager.reload(self.session.workspace_root)
         skill_dirs = [
@@ -968,6 +1198,12 @@ redo = "c-y"
             items.append(payload)
         return sorted(items, key=lambda item: str(item.get("updated_at", "")), reverse=True)
 
+    @staticmethod
+    def _render_search_results(results: List[Any]) -> str:
+        if not results:
+            return "No results."
+        return "\n".join(item.render() if hasattr(item, "render") else str(item) for item in results)
+
     def _git_summary(self) -> str:
         try:
             branch = subprocess.run(
@@ -1006,6 +1242,7 @@ redo = "c-y"
             "todos": "Automation",
             "tasks": "Automation",
             "skills": "Automation",
+            "notices": "Automation",
             "status": "Runtime",
             "model": "Runtime",
             "config": "Runtime",
@@ -1014,6 +1251,10 @@ redo = "c-y"
             "session": "Session",
             "resume": "Session",
             "rewind": "Session",
+            "search": "Session",
+            "history-search": "Session",
+            "trace-search": "Session",
+            "quickopen": "Session",
             "mcp": "Tools",
             "plugin": "Tools",
             "reload-plugins": "Tools",
@@ -1025,6 +1266,8 @@ redo = "c-y"
             "vim": "Runtime",
             "effort": "Runtime",
             "fast": "Runtime",
+            "thinking": "Runtime",
+            "picker": "Runtime",
             "statusline": "Runtime",
             "keybindings": "Runtime",
             "sandbox-toggle": "Runtime",

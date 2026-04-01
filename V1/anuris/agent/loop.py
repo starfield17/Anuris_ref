@@ -44,9 +44,9 @@ class AgentLoopRunner:
         keep_recent_tool_messages: int = 3,
         teammate_max_rounds: int = 24,
         teammate_max_tool_calls: int = 80,
-        teammate_max_runtime_sec: int = 600,
-        teammate_idle_timeout_sec: int = 60,
-        teammate_poll_interval_sec: int = 5,
+        teammate_max_runtime_sec: float = 600,
+        teammate_idle_timeout_sec: float = 60,
+        teammate_poll_interval_sec: float = 5,
         teammate_readonly_role_keywords: Optional[List[str]] = None,
     ):
         self.model = model
@@ -64,9 +64,9 @@ class AgentLoopRunner:
         self.base_tool_names = {"bash", "read_file"}
         self.teammate_max_rounds = max(1, int(teammate_max_rounds))
         self.teammate_max_tool_calls = max(1, int(teammate_max_tool_calls))
-        self.teammate_max_runtime_sec = max(10, int(teammate_max_runtime_sec))
-        self.teammate_idle_timeout_sec = max(5, int(teammate_idle_timeout_sec))
-        self.teammate_poll_interval_sec = max(1, int(teammate_poll_interval_sec))
+        self.teammate_max_runtime_sec = max(10.0, float(teammate_max_runtime_sec))
+        self.teammate_idle_timeout_sec = max(5.0, float(teammate_idle_timeout_sec))
+        self.teammate_poll_interval_sec = max(0.2, float(teammate_poll_interval_sec))
         self.teammate_readonly_role_keywords = tuple(
             item.lower()
             for item in (
@@ -961,6 +961,9 @@ class AgentLoopRunner:
                             "content": str(output),
                         }
                     )
+                    if tool_call["name"] == "shutdown_response" and bool(args.get("approve")):
+                        team_manager.set_member_status(name, "shutdown")
+                        return
                     if tool_call["name"] == "idle":
                         idle_requested = True
 
@@ -970,7 +973,8 @@ class AgentLoopRunner:
             team_manager.set_member_status(name, "idle")
 
             resume = False
-            for _ in range(max(1, idle_timeout_sec // poll_interval_sec)):
+            idle_polls = max(1, int(idle_timeout_sec / poll_interval_sec))
+            for _ in range(idle_polls):
                 stop_reason = self._teammate_budget_reason(
                     started_at=started_at,
                     total_rounds=total_rounds,

@@ -92,6 +92,10 @@ class PersistentTaskManager:
             lines.append(f"{marker} #{task['id']}: {task.get('subject', '')}{owner}{blocked}")
         return "\n".join(lines)
 
+    def list_by_status(self, status: str) -> List[dict]:
+        normalized = status.strip().lower()
+        return [task for task in self.list_records() if str(task.get("status", "") or "") == normalized]
+
     def list_records(self) -> List[dict]:
         with self._lock:
             return [json.loads(path.read_text()) for path in self._task_paths()]
@@ -135,6 +139,49 @@ class PersistentTaskManager:
         if owners:
             lines.append("owners: " + ", ".join(f"{name}={count}" for name, count in sorted(owners.items())))
         return "\n".join(lines)
+
+    def render_board(self) -> str:
+        tasks = self.list_records()
+        if not tasks:
+            return "No tasks."
+        grouped = {
+            "in_progress": [],
+            "pending": [],
+            "blocked": [],
+            "completed": [],
+        }
+        for task in tasks:
+            if task.get("blockedBy") and task.get("status") != "completed":
+                grouped["blocked"].append(task)
+                continue
+            grouped.setdefault(str(task.get("status", "pending")), []).append(task)
+        lines = ["Task board:"]
+        for key in ("in_progress", "pending", "blocked", "completed"):
+            items = grouped.get(key, [])
+            lines.extend(["", f"{key} ({len(items)}):"])
+            if not items:
+                lines.append("- (none)")
+                continue
+            for task in items:
+                owner = f" owner={task.get('owner')}" if task.get("owner") else ""
+                blocked = f" blockedBy={task.get('blockedBy')}" if task.get("blockedBy") else ""
+                lines.append(f"- #{task['id']} {task.get('subject', '')}{owner}{blocked}")
+        return "\n".join(lines)
+
+    def resumable_task(self, owner: str = "") -> Optional[dict]:
+        tasks = self.list_records()
+        preferred = []
+        if owner:
+            preferred = [task for task in tasks if task.get("owner") == owner and task.get("status") == "in_progress"]
+        if preferred:
+            return preferred[-1]
+        in_progress = [task for task in tasks if task.get("status") == "in_progress"]
+        if in_progress:
+            return in_progress[-1]
+        pending = [task for task in tasks if task.get("status") == "pending" and not task.get("blockedBy")]
+        if pending:
+            return pending[0]
+        return None
 
     def claim_task(self, task_id: int, owner: str) -> str:
         with self._lock:

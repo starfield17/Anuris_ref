@@ -235,7 +235,50 @@ class SessionStore:
         for message in self.messages[-limit:]:
             title = f"{message.role}:{message.kind}" if message.kind != "message" else message.role
             lines.append(f"- {title}: {message.preview(180) or '(empty)'}")
+            if message.kind == "compact_boundary":
+                lines.append(f"  compact_focus: {message.metadata.get('focus', 'automatic') or 'automatic'}")
         return "\n".join(lines)
+
+    def recent_message_views(self, limit: int = 10) -> List[Dict[str, Any]]:
+        views: List[Dict[str, Any]] = []
+        for index, message in enumerate(self.messages[-limit:], start=max(1, len(self.messages) - limit + 1)):
+            label = f"{message.role}:{message.kind}" if message.kind != "message" else message.role
+            views.append(
+                {
+                    "index": index,
+                    "label": label,
+                    "preview": message.preview(200) or "(empty)",
+                    "role": message.role,
+                    "kind": message.kind,
+                }
+            )
+        return views
+
+    def message_at(self, index: int) -> ConversationMessage:
+        if index < 1 or index > len(self.messages):
+            raise IndexError("message index out of range")
+        return self.messages[index - 1]
+
+    def recent_edit_diffs(self, limit: int = 10) -> List[Dict[str, Any]]:
+        diffs: List[Dict[str, Any]] = []
+        for message in reversed(self.messages):
+            if message.role != "tool" or message.kind != "tool_result":
+                continue
+            metadata = message.metadata or {}
+            if "diff" not in metadata and "path" not in metadata:
+                continue
+            diffs.append(
+                {
+                    "tool_name": message.name or "",
+                    "path": metadata.get("path", ""),
+                    "diff": metadata.get("diff", ""),
+                    "summary": metadata.get("summary", message.preview(160)),
+                    "is_error": bool(metadata.get("is_error", False)),
+                }
+            )
+            if len(diffs) >= limit:
+                break
+        return diffs
 
     def rename(self, title: str) -> str:
         normalized = _normalize_title(title)

@@ -23,7 +23,7 @@ def _git_command(dispatcher, args: list[str], fallback: str) -> str:
 
 def register_analysis_commands(dispatcher) -> None:
     dispatcher._register("cost", "Show local session usage accounting.", "/cost", lambda args: _handle_cost(dispatcher, args))
-    dispatcher._register("diff", "Show the current git diff.", "/diff [full|pathspec]", lambda args: _handle_diff(dispatcher, args))
+    dispatcher._register("diff", "Show the current git diff or recent session edits.", "/diff [full|recent|session|pathspec]", lambda args: _handle_diff(dispatcher, args))
     dispatcher._register("review", "Run a local AI code review over the current diff or PR.", "/review [pr_number]", lambda args: _handle_review(dispatcher, args))
     dispatcher._register("plan", "Enter plan mode or ask the model to draft a plan.", "/plan [open|show|description]", lambda args: _handle_plan(dispatcher, args))
 
@@ -35,6 +35,26 @@ def _handle_cost(dispatcher, args: str) -> None:
 
 def _handle_diff(dispatcher, args: str) -> None:
     raw = args.strip()
+    if raw == "recent":
+        diffs = dispatcher.session.session_store.recent_edit_diffs(limit=5)
+        if not diffs:
+            dispatcher.ui.display_message("No recent session edit diffs.", style="yellow")
+            return
+        dispatcher.ui.display_message(
+            "\n\n".join(f"{item['path']}\n{item['diff'] or item['summary']}" for item in diffs),
+            style="cyan",
+        )
+        return
+    if raw == "session":
+        diffs = dispatcher.session.session_store.recent_edit_diffs(limit=20)
+        if not diffs:
+            dispatcher.ui.display_message("No session edit diffs.", style="yellow")
+            return
+        dispatcher.ui.display_message(
+            "\n\n".join(f"{item['path']}\n{item['diff'] or item['summary']}" for item in diffs),
+            style="cyan",
+        )
+        return
     if raw in {"full", "--full"}:
         output = _git_command(dispatcher, ["git", "diff", "--no-ext-diff"], "(no diff)")
     elif raw:
@@ -77,6 +97,11 @@ Diff:
 {diff_text[:12000]}
 ```
 """.strip()
+    session_diffs = dispatcher.session.session_store.recent_edit_diffs(limit=5)
+    if session_diffs:
+        prompt += "\n\nRecent session edit summaries:\n" + "\n".join(
+            f"- {item['path']}: {item['summary']}" for item in session_diffs
+        )
     dispatcher.session.run_prompt_command("review", prompt)
 
 

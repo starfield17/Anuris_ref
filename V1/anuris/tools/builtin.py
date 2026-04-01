@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import difflib
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -145,11 +146,26 @@ class WriteFileTool(BaseTool):
         path = _resolve_workspace_path(context.workspace_root, str(args.get("path", "")))
         path.parent.mkdir(parents=True, exist_ok=True)
         content = str(args.get("content", ""))
+        previous = path.read_text(encoding="utf-8") if path.exists() else ""
         path.write_text(content, encoding="utf-8")
         context.services.context_files.record(path)
+        diff = "\n".join(
+            difflib.unified_diff(
+                previous.splitlines(),
+                content.splitlines(),
+                fromfile=f"{path.name}:before",
+                tofile=f"{path.name}:after",
+                lineterm="",
+            )
+        )
         return ToolExecutionResult(
             model_content=f"Wrote {len(content)} characters to {path.relative_to(context.workspace_root)}",
             summary=f"write_file {path.relative_to(context.workspace_root)}",
+            metadata={
+                "path": str(path.relative_to(context.workspace_root)),
+                "diff": diff,
+                "summary": f"write_file {path.relative_to(context.workspace_root)}",
+            },
         )
 
 
@@ -179,9 +195,23 @@ class EditFileTool(BaseTool):
         updated = content.replace(old_text, new_text, 1)
         path.write_text(updated, encoding="utf-8")
         context.services.context_files.record(path)
+        diff = "\n".join(
+            difflib.unified_diff(
+                content.splitlines(),
+                updated.splitlines(),
+                fromfile=f"{path.name}:before",
+                tofile=f"{path.name}:after",
+                lineterm="",
+            )
+        )
         return ToolExecutionResult(
             model_content=f"Edited {path.relative_to(context.workspace_root)}",
             summary=f"edit_file {path.relative_to(context.workspace_root)}",
+            metadata={
+                "path": str(path.relative_to(context.workspace_root)),
+                "diff": diff,
+                "summary": f"edit_file {path.relative_to(context.workspace_root)}",
+            },
         )
 
 
