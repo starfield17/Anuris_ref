@@ -33,7 +33,10 @@ class ChatStateMachine:
                 continue
 
             if self.session.attachment_manager.attachments:
-                self.ui.display_message("\n[Pending attachments]", style="cyan")
+                if hasattr(self.ui, "display_activity_event"):
+                    self.ui.display_activity_event("context", "pending attachments", tone="info")
+                else:
+                    self.ui.display_message("\n[Pending attachments]", style="cyan")
                 self.ui.display_attachments(self.session.attachment_manager.list_attachments())
 
             user_input = self.ui.display_prompt()

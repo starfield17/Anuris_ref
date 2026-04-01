@@ -6,7 +6,7 @@ from dataclasses import dataclass
 @dataclass
 class RuntimeSettings:
     output_style: str = "rich"
-    theme: str = "default"
+    theme: str = "claude"
     vim_mode: bool = False
 
 

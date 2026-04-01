@@ -152,6 +152,8 @@ class ChatSession:
             reset_workspace=self.reset_workspace,
         )
         self.command_dispatcher = CommandDispatcher(self)
+        if hasattr(self.ui, "bind_session"):
+            self.ui.bind_session(self)
 
     @property
     def is_headless(self) -> bool:
@@ -245,7 +247,10 @@ class ChatSession:
         if result.reasoning_text:
             self.ui.display_reasoning(result.reasoning_text)
         if result.final_text:
-            self.ui.display_message(f"Anuris: {result.final_text}", style="bold blue")
+            if hasattr(self.ui, "display_assistant_message"):
+                self.ui.display_assistant_message(result.final_text)
+            else:
+                self.ui.display_message(f"Anuris: {result.final_text}", style="bold blue")
         self.services.usage_tracker.record_response(result.final_text, result.reasoning_text)
 
         output_text = self._consume_ui_output()
@@ -270,18 +275,34 @@ class ChatSession:
                 for result in hook_results:
                     if result["returncode"] != "0":
                         message = result["stderr"] or result["stdout"] or "(no output)"
-                        self.ui.display_message(f"[hook:{event_type}] {message}", style="red")
+                        if hasattr(self.ui, "display_activity_event"):
+                            self.ui.display_activity_event(f"hook:{event_type}", message, tone="danger")
+                        else:
+                            self.ui.display_message(f"[hook:{event_type}] {message}", style="red")
         if not self.is_headless:
             if event_type == "agent_round_started":
-                self.ui.display_message(f"[agent] round {event.get('round')}", style="cyan")
+                if hasattr(self.ui, "display_activity_event"):
+                    self.ui.display_activity_event("agent round", str(event.get("round", "")), tone="info")
+                else:
+                    self.ui.display_message(f"[agent] round {event.get('round')}", style="cyan")
             elif event_type == "tool_called":
-                self.ui.display_message(f"[tool] {event.get('tool_name')}", style="yellow")
+                if hasattr(self.ui, "display_activity_event"):
+                    self.ui.display_activity_event("tool", str(event.get("tool_name", "")), tone="warning")
+                else:
+                    self.ui.display_message(f"[tool] {event.get('tool_name')}", style="yellow")
             elif event_type == "tool_result":
                 preview = str(event.get("content", ""))[:240]
-                style = "red" if event.get("is_error") else "green"
-                self.ui.display_message(f"[tool-result] {preview}", style=style)
+                if hasattr(self.ui, "display_activity_event"):
+                    tone = "danger" if event.get("is_error") else "success"
+                    self.ui.display_activity_event("tool result", preview, tone=tone)
+                else:
+                    style = "red" if event.get("is_error") else "green"
+                    self.ui.display_message(f"[tool-result] {preview}", style=style)
             elif event_type == "compact_boundary":
-                self.ui.display_message("[agent] context compacted", style="magenta")
+                if hasattr(self.ui, "display_activity_event"):
+                    self.ui.display_activity_event("agent", "context compacted", tone="info")
+                else:
+                    self.ui.display_message("[agent] context compacted", style="magenta")
         self._emit_event(event_type, **{key: value for key, value in event.items() if key != "type"})
 
     def _attach_paths(self, attachment_paths: List[str]) -> List[Any]:
@@ -328,6 +349,8 @@ class ChatSession:
         self.engine.workspace_root = self.workspace_root
         self.tool_registry = ToolRegistry(build_default_tools())
         self.engine.tool_registry = self.tool_registry
+        if hasattr(self.ui, "bind_session"):
+            self.ui.bind_session(self)
 
     def _build_services(self, workspace_root: Path) -> SessionServices:
         plugin_manager = PluginManager(workspace_root)
@@ -368,7 +391,10 @@ class ChatSession:
         if result.reasoning_text:
             self.ui.display_reasoning(result.reasoning_text)
         if result.final_text:
-            self.ui.display_message(f"Anuris: {result.final_text}", style="bold blue")
+            if hasattr(self.ui, "display_assistant_message"):
+                self.ui.display_assistant_message(result.final_text)
+            else:
+                self.ui.display_message(f"Anuris: {result.final_text}", style="bold blue")
         return result.final_text
 
     def _next_request_id(self) -> str:
