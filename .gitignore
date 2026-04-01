@@ -16,6 +16,7 @@ dist/
 *.so
 
 # Local Anuris debug files
+.anuris/
 .anuris_*
 
 # Logs and temp files
