@@ -116,6 +116,9 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/review [pr_number]`
 * `/plan [open|show|description]`
 * `/hooks [list|add|remove|run]`
+* `/summary`
+* `/context`
+* `/memory [show|append|clear]`
 
 ### Keyboard Shortcuts
 

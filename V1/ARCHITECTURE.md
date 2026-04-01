@@ -69,6 +69,7 @@ V1/
       hooks.py           # local hook runner / registry
       context_files.py   # files currently in session context
       usage.py           # local usage accounting for /cost
+      memory.py          # workspace memory backing /memory
     tools/
       base.py            # BaseTool + ToolExecutionResult
       builtin.py         # bash/read/write/edit/glob/grep/task/skill/MCP/worktree tools
@@ -166,6 +167,9 @@ Interactive commands:
 - `/review [pr_number]`
 - `/plan [open|show|description]`
 - `/hooks [list|add|remove|run]`
+- `/summary`
+- `/context`
+- `/memory [show|append|clear]`
 
 ## 6. Built-in Tools
 

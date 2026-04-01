@@ -121,11 +121,15 @@ Current slash commands:
 - `/review [pr_number]`
 - `/plan [open|show|description]`
 - `/hooks [list|add|remove|run]`
+- `/summary`
+- `/context`
+- `/memory [show|append|clear]`
 
 New grouped command registrations live under `V1/anuris/command_specs/`:
 
 - `analysis.py` for `/cost`, `/diff`, `/review`, `/plan`
 - `events.py` for `/hooks`
+- `inspection.py` for `/summary`, `/context`, `/memory`
 
 ## 4) Test Commands
 
