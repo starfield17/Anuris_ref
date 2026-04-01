@@ -10,6 +10,7 @@ from rich.console import Console
 
 from .attachments import AttachmentManager
 from .commands import CommandDispatcher
+from .config import ConfigManager
 from .config import Config
 from .engine import PermissionContext, QueryEngine, SessionServices, SessionStore
 from .model import ChatModel
@@ -126,8 +127,10 @@ class ChatSession:
         model: Optional[ChatModel] = None,
         event_callback: Optional[EventCallback] = None,
         session_id: Optional[str] = None,
+        config_manager: Optional[ConfigManager] = None,
     ):
         self.config = config
+        self.config_manager = config_manager
         self.ui = ui or HeadlessUI()
         self.initial_workspace_root = (workspace_root or Path.cwd()).resolve()
         self.workspace_root = self.initial_workspace_root
@@ -372,7 +375,7 @@ class ChatSession:
             worktree_manager=WorktreeManager(workspace_root),
             plugin_manager=plugin_manager,
             mcp_manager=MCPManager(workspace_root),
-            settings_manager=SettingsManager(),
+            settings_manager=SettingsManager.from_config(self.config, self.config_manager),
             hook_manager=HookManager(workspace_root),
             context_files=ContextFileTracker(workspace_root),
             usage_tracker=UsageTracker(),

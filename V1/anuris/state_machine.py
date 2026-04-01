@@ -5,6 +5,7 @@ from typing import Optional
 from rich.prompt import Prompt
 
 from .config import Config
+from .config import ConfigManager
 from .session import ChatSession
 from .ui import ChatUI
 
@@ -18,11 +19,11 @@ class ChatState(Enum):
 class ChatStateMachine:
     """Thin TTY shell around the refactored ChatSession."""
 
-    def __init__(self, config: Config, ui: ChatUI, workspace_root: Optional[Path] = None):
+    def __init__(self, config: Config, ui: ChatUI, workspace_root: Optional[Path] = None, config_manager: Optional[ConfigManager] = None):
         self.config = config
         self.ui = ui
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
-        self.session = ChatSession(config, ui, workspace_root=self.workspace_root)
+        self.session = ChatSession(config, ui, workspace_root=self.workspace_root, config_manager=config_manager)
         self.current_state = ChatState.IDLE
 
     def run(self) -> None:

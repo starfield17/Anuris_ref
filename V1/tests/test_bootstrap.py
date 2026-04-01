@@ -31,12 +31,32 @@ class FakeConfigManager:
 class BootstrapTests(unittest.TestCase):
     def test_build_arg_parser_parses_known_args(self):
         parser = build_arg_parser()
-        args = parser.parse_args(["--model", "demo-model", "--debug", "--reasoning", "off", "--debug-server", "--debug-port", "9001"])
+        args = parser.parse_args(
+            [
+                "--model",
+                "demo-model",
+                "--debug",
+                "--reasoning",
+                "off",
+                "--debug-server",
+                "--debug-port",
+                "9001",
+                "--theme",
+                "dark",
+                "--output-style",
+                "plain",
+                "--vim-mode",
+                "on",
+            ]
+        )
         self.assertEqual(args.model, "demo-model")
         self.assertTrue(args.debug)
         self.assertEqual(args.reasoning, "off")
         self.assertTrue(args.debug_server)
         self.assertEqual(args.debug_port, 9001)
+        self.assertEqual(args.theme, "dark")
+        self.assertEqual(args.output_style, "plain")
+        self.assertEqual(args.vim_mode, "on")
 
     def test_resolve_system_prompt_arg_from_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -56,7 +76,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(args.system_prompt, "inline prompt")
 
     def test_merge_runtime_config_applies_cli_overrides(self):
-        saved_config = Config(api_key="saved-key", model="saved-model", temperature=0.1)
+        saved_config = Config(api_key="saved-key", model="saved-model", temperature=0.1, theme="claude", output_style="rich")
         manager = FakeConfigManager(saved_config)
         args = argparse.Namespace(
             api_key=None,
@@ -68,6 +88,9 @@ class BootstrapTests(unittest.TestCase):
             reasoning="off",
             system_prompt=None,
             system_prompt_file=None,
+            theme="dark",
+            output_style="plain",
+            vim_mode="on",
             save_config=False,
         )
 
@@ -77,6 +100,9 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(merged_config.base_url, "https://api.example.com/v1")
         self.assertEqual(merged_config.temperature, 0.8)
         self.assertFalse(merged_config.reasoning)
+        self.assertEqual(merged_config.theme, "dark")
+        self.assertEqual(merged_config.output_style, "plain")
+        self.assertTrue(merged_config.vim_mode)
         self.assertEqual(config_dict["api_key"], "saved-key")
 
     def test_maybe_save_config_only_when_flag_set(self):

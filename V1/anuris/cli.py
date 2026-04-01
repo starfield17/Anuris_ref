@@ -41,5 +41,5 @@ def main() -> None:
         return
 
     ui = ChatUI()
-    chat_app = ChatStateMachine(config, ui, workspace_root=app_workspace)
+    chat_app = ChatStateMachine(config, ui, workspace_root=app_workspace, config_manager=config_manager)
     chat_app.run()

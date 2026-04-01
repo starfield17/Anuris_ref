@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from anuris.config import ConfigManager
 from anuris.config import Config
 from anuris.session import ChatSession
 
@@ -332,3 +333,34 @@ class CommandDispatcherTests(unittest.TestCase):
             text=True,
         ).stdout
         self.assertIn("test workspace snapshot", log)
+
+    def test_runtime_settings_persist_to_config_file(self):
+        config_path = self.workspace / "anuris_config.toml"
+        manager = ConfigManager(config_file=config_path)
+        persistent = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="persistcfg",
+            config_manager=manager,
+        )
+
+        persistent.handle_input("/theme dark")
+        persistent.handle_input("/output-style plain")
+        persistent.handle_input("/vim on")
+
+        loaded = manager.load_config()
+        self.assertEqual(loaded.theme, "dark")
+        self.assertEqual(loaded.output_style, "plain")
+        self.assertTrue(loaded.vim_mode)
+
+        restored = ChatSession(
+            loaded,
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="persistcfg2",
+            config_manager=manager,
+        )
+        self.assertEqual(restored.services.settings_manager.runtime.theme, "dark")
+        self.assertEqual(restored.services.settings_manager.runtime.output_style, "plain")
+        self.assertTrue(restored.services.settings_manager.runtime.vim_mode)

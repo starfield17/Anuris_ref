@@ -18,6 +18,9 @@ class Config:
     temperature: float = 0.4
     reasoning: bool = True
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    output_style: str = "rich"
+    theme: str = "claude"
+    vim_mode: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
@@ -32,8 +35,8 @@ class Config:
 class ConfigManager:
     """Manages configuration storage and retrieval (TOML version)."""
 
-    def __init__(self):
-        self.config_file = Path.home() / ".anuris_config.toml"
+    def __init__(self, config_file: Path | None = None):
+        self.config_file = (config_file or (Path.home() / ".anuris_config.toml")).expanduser().resolve()
         self.default_config = Config()
 
     def save_config(self, **kwargs) -> None:

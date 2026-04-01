@@ -4,6 +4,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from .config import Config, ConfigManager
+from .services.settings import SUPPORTED_THEMES
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -23,6 +24,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--system-prompt", help="Custom system prompt")
     parser.add_argument("--system-prompt-file", help="File containing custom system prompt")
+    parser.add_argument("--output-style", choices=["plain", "rich"], help="Preferred interactive output style")
+    parser.add_argument("--theme", choices=list(SUPPORTED_THEMES), help="Preferred interactive theme")
+    parser.add_argument(
+        "--vim-mode",
+        choices=["on", "off"],
+        default=None,
+        help="Enable or disable vim mode in the interactive prompt.",
+    )
     parser.add_argument(
         "--save-config",
         action="store_true",
@@ -58,6 +67,8 @@ def merge_runtime_config(args: argparse.Namespace, config_manager: ConfigManager
 
     for key, value in vars(args).items():
         if key == "reasoning" and isinstance(value, str):
+            value = value == "on"
+        if key == "vim_mode" and isinstance(value, str):
             value = value == "on"
         if value is not None and key in config_dict:
             config_dict[key] = value
