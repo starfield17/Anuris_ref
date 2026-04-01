@@ -24,6 +24,9 @@ class BaseTool:
 
     name = ""
     description = ""
+    search_hint = ""
+    permission_type = "execute"
+    usage_policy = ""
     requires_write = False
     coordination_tool = False
 
@@ -32,7 +35,7 @@ class BaseTool:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": self._schema_description(),
                 "parameters": self.input_schema(),
             },
         }
@@ -40,12 +43,35 @@ class BaseTool:
     def input_schema(self) -> Dict[str, Any]:
         raise NotImplementedError
 
+    def _schema_description(self) -> str:
+        parts = [self.description.strip()]
+        if self.search_hint:
+            parts.append(f"Search hint: {self.search_hint.strip()}.")
+        if self.usage_policy:
+            parts.append(self.usage_policy.strip())
+        return " ".join(part for part in parts if part)
+
+    def compact_summary(self, args: Dict[str, Any]) -> str:
+        return self.name
+
+    def can_expose_detail(self, context: Any) -> Dict[str, Any]:
+        denial = context.permission_context.explain_tool_denial(
+            self.name,
+            requires_write=self.requires_write,
+            permission_type=self.permission_type,
+        )
+        return {"allowed": denial is None, "denial": denial}
+
     def can_expose(self, context: Any) -> bool:
-        if not context.permission_context.permits_tool(self.name):
-            return False
-        if context.permission_context.mode == "readonly" and self.requires_write:
-            return False
-        return True
+        return self.can_expose_detail(context)["allowed"]
 
     def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
         raise NotImplementedError
+
+
+class ToolPermissionError(PermissionError):
+    """Structured permission failure raised by the tool registry."""
+
+    def __init__(self, denial: Dict[str, Any]):
+        self.denial = dict(denial)
+        super().__init__(self.denial.get("message", "Tool permission denied"))

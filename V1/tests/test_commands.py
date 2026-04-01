@@ -448,9 +448,11 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertIn("[session] searchable", search_all.output_text)
         self.assertIn("[trace] trace1", search_all.output_text)
         self.assertIn("[export] alpha-export", search_all.output_text)
+        self.assertIn("[message] searchable", search_all.output_text)
 
         history = self.session.handle_input("/history-search alpha")
         self.assertIn("[session] searchable", history.output_text)
+        self.assertIn("[message] searchable", history.output_text)
 
         trace = self.session.handle_input("/trace-search alpha")
         self.assertIn("[trace] trace1", trace.output_text)

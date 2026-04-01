@@ -53,7 +53,7 @@ class RuntimeNotice:
 
 
 class NotificationCenter:
-    """Queue for runtime notices with collapse and defer policies."""
+    """Queue manager for runtime notices, async events, and deferred delivery."""
 
     def __init__(self):
         self._queue: List[RuntimeNotice] = []
@@ -85,6 +85,8 @@ class NotificationCenter:
             collapse_key=collapse_key.strip(),
             metadata=dict(metadata or {}),
         )
+        notice.metadata.setdefault("source", notice.channel)
+        notice.metadata.setdefault("inject_to_model", True)
         if notice.collapse_key:
             for existing in reversed(self._queue):
                 if existing.collapse_key != notice.collapse_key or existing.defer_until != notice.defer_until:
@@ -92,6 +94,7 @@ class NotificationCenter:
                 existing.count += 1
                 existing.metadata["last_message"] = notice.message
                 existing.metadata["last_created_at"] = notice.created_at
+                existing.metadata.setdefault("collapsed_ids", []).append(notice.id)
                 return existing
         self._queue.append(notice)
         return notice
@@ -144,6 +147,12 @@ class NotificationCenter:
                 "priority": 95,
                 "collapse_key": "permissions:rejected",
             },
+            "governance_pending": {
+                "tone": "warning",
+                "channel": "team",
+                "priority": 70,
+                "collapse_key": "team:governance",
+            },
         }
         spec = mapping.get(event_type, {"tone": "info", "channel": "runtime", "priority": 45, "collapse_key": event_type})
         message = str(payload.get("message", "") or payload.get("content", "") or event_type.replace("_", " "))
@@ -156,6 +165,22 @@ class NotificationCenter:
             collapse_key=spec["collapse_key"],
             metadata=payload,
         )
+
+    def drain_for_model(self, limit: int = 8) -> List[Dict[str, Any]]:
+        ready: List[RuntimeNotice] = []
+        remaining: List[RuntimeNotice] = []
+        for notice in self._queue:
+            if notice.metadata.get("inject_to_model", True):
+                ready.append(notice)
+            else:
+                remaining.append(notice)
+        self._queue = remaining
+        drained = sorted(ready, key=lambda item: (-item.priority, item.created_at))[:limit]
+        overflow = sorted(ready, key=lambda item: (-item.priority, item.created_at))[limit:]
+        self._queue = overflow + self._queue
+        for notice in drained:
+            self._recent.append(notice)
+        return [notice.to_dict() for notice in drained]
 
     def drain(self) -> List[Dict[str, Any]]:
         items = [notice.to_dict() for notice in self._queue]
@@ -193,15 +218,33 @@ class NotificationCenter:
         queued = list(self._queue)
         channels: Dict[str, int] = {}
         tones: Dict[str, int] = {}
+        stages: Dict[str, int] = {}
         for notice in queued:
             channels[notice.channel] = channels.get(notice.channel, 0) + notice.count
             tones[notice.tone] = tones.get(notice.tone, 0) + notice.count
+            stages[notice.defer_until] = stages.get(notice.defer_until, 0) + notice.count
         return {
             "queued": len(queued),
             "channels": channels,
             "tones": tones,
+            "stages": stages,
             "highest_priority": max((notice.priority for notice in queued), default=0),
         }
+
+    def grouped(self) -> List[Dict[str, Any]]:
+        items = sorted(self._queue, key=lambda item: (-item.priority, item.created_at))
+        return [
+            {
+                "collapse_key": item.collapse_key or item.id,
+                "channel": item.channel,
+                "tone": item.tone,
+                "defer_until": item.defer_until,
+                "priority": item.priority,
+                "count": item.count,
+                "display_message": item.display_message(),
+            }
+            for item in items
+        ]
 
     def clear(self, channel: str = "") -> int:
         if not channel:

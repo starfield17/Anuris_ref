@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .messages import ConversationMessage
+from .messages import ConversationMessage, extract_text_content
 
 
 class SessionStore:
@@ -279,6 +279,67 @@ class SessionStore:
             if len(diffs) >= limit:
                 break
         return diffs
+
+    def search_documents(self) -> List[Dict[str, Any]]:
+        return self.search_documents_from_payload(
+            {
+                "session_id": self.session_id,
+                "title": self.title,
+                "messages": [message.to_dict() for message in self.messages],
+            },
+            self.session_dir,
+        )
+
+    @staticmethod
+    def search_documents_from_payload(payload: Dict[str, Any], session_dir: Path) -> List[Dict[str, Any]]:
+        session_id = str(payload.get("session_id", session_dir.name))
+        title = str(payload.get("title") or session_id)
+        transcript_path = str((session_dir / "transcript.md").resolve())
+        items: List[Dict[str, Any]] = []
+        session_context_parts: List[str] = [title]
+        for index, raw_message in enumerate(payload.get("messages", []), start=1):
+            try:
+                message = ConversationMessage.from_dict(raw_message)
+            except Exception:
+                continue
+            text = extract_text_content(message.content).strip()
+            if not text and not message.reasoning:
+                continue
+            kind = "compact" if message.kind == "compact_boundary" else "message"
+            base_rank = {
+                "user": 90,
+                "assistant": 85,
+                "tool": 70,
+                "system": 65,
+            }.get(message.role, 60)
+            session_context_parts.extend(part[:400] for part in [text, message.reasoning] if part)
+            items.append(
+                {
+                    "kind": kind,
+                    "source_id": session_id,
+                    "title": f"{message.role}:{message.kind}",
+                    "text": "\n".join(part for part in [text, message.reasoning] if part),
+                    "path": transcript_path,
+                    "role": message.role,
+                    "message_kind": message.kind,
+                    "message_index": index,
+                    "tool_name": message.name or "",
+                    "has_reasoning": bool(message.reasoning),
+                    "rank": base_rank,
+                }
+            )
+        session_text = "\n".join(part for part in session_context_parts if part).strip()
+        return [
+            {
+                "kind": "session",
+                "source_id": session_id,
+                "title": title,
+                "text": session_text[:6000],
+                "path": transcript_path,
+                "rank": 120,
+            },
+            *items,
+        ]
 
     def rename(self, title: str) -> str:
         normalized = _normalize_title(title)

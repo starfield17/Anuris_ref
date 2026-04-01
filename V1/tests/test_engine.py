@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from anuris.config import Config
 from anuris.engine import PermissionContext, QueryEngine, SessionServices, SessionStore
@@ -8,6 +9,7 @@ from anuris.agent.skills import SkillLoader
 from anuris.agent.tasks import PersistentTaskManager
 from anuris.agent.todo import TodoManager
 from anuris.services import (
+    ContextBudgetService,
     ContextFileTracker,
     HookManager,
     MCPManager,
@@ -208,3 +210,77 @@ class QueryEngineTests(unittest.TestCase):
         self.assertTrue(any("Queued runtime notices" in str(message.get("content", "")) for message in messages))
         self.assertTrue(any("Relevant available skills" in str(message.get("content", "")) for message in messages))
         self.assertTrue(any(event.get("type") == "skill_prefetch" for event in events))
+
+    def test_query_engine_returns_structured_permission_denial_for_blocked_tool(self):
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("write_file", '{"path":"blocked.txt","content":"x"}')]}}]},
+                {"choices": [{"message": {"content": "Falling back after the permission rejection."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng7")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        result = engine.submit(
+            "Try writing a file.",
+            permission_context=PermissionContext(mode="readonly", allowed_tools={"write_file"}),
+            allowed_tool_names={"write_file"},
+        )
+        self.assertIn("permission rejection", result.final_text.lower())
+        tool_messages = [message for message in store.messages if message.role == "tool"]
+        self.assertEqual(len(tool_messages), 1)
+        denial = tool_messages[0].metadata.get("permission_denial", {})
+        self.assertEqual(denial.get("reason_code"), "readonly_requires_write")
+        self.assertEqual(denial.get("tool_name"), "write_file")
+
+    def test_query_engine_auto_compacts_using_context_budget(self):
+        model = FakeModel([{"choices": [{"message": {"content": "Done after compaction."}}]}])
+        store = SessionStore("system", self.workspace, "eng8")
+        for index in range(5):
+            store.add_user_message(f"user {index} " + ("alpha " * 120))
+            store.add_assistant_message(f"assistant {index} " + ("beta " * 120))
+
+        session_like = SimpleNamespace(
+            session_store=store,
+            workspace_root=self.workspace,
+            services=self.services,
+        )
+        self.services.context_budget = ContextBudgetService(session_like, soft_limit=1000, hard_limit=1400)
+        events = []
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+            event_callback=events.append,
+            auto_compact_chars=999999,
+        )
+
+        result = engine.submit("Short follow-up.")
+        self.assertEqual(result.final_text, "Done after compaction.")
+        self.assertEqual(store.messages[1].kind, "compact_boundary")
+        compact_event = next(event for event in events if event.get("type") == "compact_boundary")
+        self.assertTrue(compact_event.get("budget", {}).get("should_compact"))
+        self.assertTrue(compact_event.get("compact_reason"))
+
+    def test_notification_center_drain_for_model_prioritizes_and_preserves_noninjectable_items(self):
+        center = NotificationCenter()
+        center.enqueue("low", priority=20)
+        center.enqueue("high", priority=90)
+        center.enqueue("ui only", priority=80, metadata={"inject_to_model": False})
+
+        drained = center.drain_for_model(limit=1)
+        self.assertEqual(len(drained), 1)
+        self.assertEqual(drained[0]["message"], "high")
+        preview = center.preview()
+        self.assertIn("ui only", preview)
+        self.assertIn("low", preview)

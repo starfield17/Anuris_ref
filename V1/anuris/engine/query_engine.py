@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from ..model import ChatModel
-from ..tools.base import ToolExecutionResult
+from ..tools.base import ToolExecutionResult, ToolPermissionError
 from .context import PermissionContext, SessionServices, ToolUseContext
 from .messages import ConversationMessage, EngineResponse, ToolCall, extract_text_content
 from .session_store import SessionStore
@@ -66,7 +66,7 @@ class QueryEngine:
         tool_events: List[str] = []
         runtime_notices = []
         if getattr(self.services, "notification_center", None) is not None:
-            runtime_notices = self.services.notification_center.drain()
+            runtime_notices = self.services.notification_center.drain_for_model(limit=6)
         prefetched_skills = []
         if getattr(self.services, "skill_loader", None) is not None:
             prefetched_skills = self.services.skill_loader.prefetch(prompt)
@@ -76,7 +76,7 @@ class QueryEngine:
             self._emit("skill_prefetch", skills=prefetched_skills)
 
         for round_index in range(1, self.max_turns + 1):
-            self._maybe_auto_compact()
+            self._maybe_auto_compact(pending_prompt=prompt if round_index == 1 else "")
             self._emit("agent_round_started", round=round_index)
             tool_context = self._build_tool_context(permission, allowed_tool_names)
             active_tools = self.tool_registry.get_schemas(tool_context, allowed_tool_names=allowed_tool_names)
@@ -136,6 +136,14 @@ class QueryEngine:
                 try:
                     tool = self.tool_registry.require(tool_call.name, tool_context, allowed_tool_names=allowed_tool_names)
                     result = tool.execute(args, tool_context)
+                except ToolPermissionError as exc:
+                    result = ToolExecutionResult(
+                        model_content=f"Error: {exc.denial.get('message', str(exc))}",
+                        display_content=f"Error: {exc.denial.get('message', str(exc))}",
+                        is_error=True,
+                        summary=f"{tool_call.name} denied",
+                        metadata={"permission_denial": exc.denial},
+                    )
                 except Exception as exc:
                     result = ToolExecutionResult(
                         model_content=f"Error: {exc}",
@@ -157,6 +165,8 @@ class QueryEngine:
                     tool_name=tool_call.name,
                     content=result.display_content,
                     is_error=result.is_error,
+                    metadata=result.metadata,
+                    summary=result.summary,
                     round=round_index,
                 )
 
@@ -231,11 +241,26 @@ class QueryEngine:
             },
         )
 
-    def _maybe_auto_compact(self) -> None:
-        if self.session_store.approximate_size() < self.auto_compact_chars:
+    def _maybe_auto_compact(self, pending_prompt: str = "") -> None:
+        budget_service = getattr(self.services, "context_budget", None)
+        if budget_service is None:
+            if self.session_store.approximate_size() < self.auto_compact_chars:
+                return
+            summary = self.session_store.compact_history("automatic compaction")
+            self._emit("compact_boundary", content=summary)
             return
-        summary = self.session_store.compact_history("automatic compaction")
-        self._emit("compact_boundary", content=summary)
+        snapshot = budget_service.analyze(pending_prompt=pending_prompt)
+        if not snapshot.should_compact:
+            return
+        focus = snapshot.compact_focus or "automatic compaction"
+        summary = self.session_store.compact_history(focus)
+        self._emit(
+            "compact_boundary",
+            content=summary,
+            focus=focus,
+            compact_reason=snapshot.compact_reason,
+            budget=snapshot.to_dict(),
+        )
 
     def _emit(self, event_type: str, **payload: Any) -> None:
         if not self.event_callback:

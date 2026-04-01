@@ -47,25 +47,30 @@ class PermissionManager:
             return PermissionContext(
                 mode=self.mode,
                 allowed_tools=set(),
+                denied_tools=set(),
                 sandbox_mode=sandbox_mode,
                 excluded_commands=tuple(excluded_commands or ()),
             )
 
         allowed_tools = None if explicit_allowed_tools is None else set(explicit_allowed_tools)
+        denied_tools: set[str] = set()
         effective_mode = self.mode
         if sandbox_mode == "read-only" and effective_mode == "default":
             effective_mode = "readonly"
 
         if effective_mode == "readonly":
             if allowed_tools is None:
-                allowed_tools = None
+                denied_tools |= self.READONLY_DENY
             else:
                 allowed_tools -= self.READONLY_DENY
+                denied_tools |= self.READONLY_DENY
         elif effective_mode == "plan":
             allowed_tools = set(self.PLAN_ALLOWED) if allowed_tools is None else (set(allowed_tools) & self.PLAN_ALLOWED)
+            denied_tools |= self.READONLY_DENY
         return PermissionContext(
             mode=effective_mode,
             allowed_tools=allowed_tools,
+            denied_tools=denied_tools or None,
             sandbox_mode=sandbox_mode,
             excluded_commands=tuple(excluded_commands or ()),
         )

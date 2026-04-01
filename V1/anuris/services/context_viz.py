@@ -30,6 +30,7 @@ class ContextVisualizer:
         self.session = session
 
     def analyze(self) -> Dict[str, Any]:
+        budget_service = getattr(self.session.services, "context_budget", None)
         store = self.session.session_store
         context_files = self.session.services.context_files
         memory_manager = self.session.services.memory_manager
@@ -95,6 +96,7 @@ class ContextVisualizer:
             "recent_files": recent_files,
             "approx_chars": store.approximate_size(),
             "compact_count": len(grouped["compact_summaries"]),
+            "budget": budget_service.analyze().to_dict() if budget_service is not None else None,
         }
 
     def render(self) -> str:
@@ -103,9 +105,17 @@ class ContextVisualizer:
             "Context visualization:",
             f"- approx_chars: {data['approx_chars']}",
             f"- compact_boundaries: {data['compact_count']}",
-            "",
-            "Sources:",
         ]
+        if data.get("budget"):
+            lines.extend(
+                [
+                    f"- budget_soft_limit: {data['budget']['soft_limit']}",
+                    f"- budget_hard_limit: {data['budget']['hard_limit']}",
+                    f"- should_compact: {data['budget']['should_compact']}",
+                    f"- compact_reason: {data['budget']['compact_reason'] or 'within budget'}",
+                ]
+            )
+        lines.extend(["", "Sources:"])
         for key, total in data["totals"].items():
             count = len(data["groups"][key])
             lines.append(f"- {key}: {count} item(s), {total} chars")

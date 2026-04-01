@@ -16,6 +16,7 @@ from .engine import PermissionContext, QueryEngine, SessionServices, SessionStor
 from .model import ChatModel
 from .prompts import prompt_manager
 from .services import (
+    ContextBudgetService,
     ContextFileTracker,
     ContextVisualizer,
     DiagnosticsService,
@@ -153,6 +154,7 @@ class ChatSession:
         self.services = self._build_services(self.workspace_root)
         self.services.context_visualizer = ContextVisualizer(self)
         self.services.diagnostics = DiagnosticsService(self)
+        self.services.context_budget = ContextBudgetService(self)
         self.tool_registry = ToolRegistry(build_default_tools())
         self.engine = QueryEngine(
             model=self.model,
@@ -317,14 +319,19 @@ class ChatSession:
                     collapse_key="tool_result:error" if event.get("is_error") else "",
                     metadata=event,
                 )
-                if event.get("is_error"):
+                denial = (event.get("metadata") or {}).get("permission_denial", {})
+                if denial:
                     notifications.enqueue_event(
                         "tool_rejected",
-                        {"message": str(event.get("content", ""))[:240], **event},
+                        {
+                            "message": str(denial.get("message") or event.get("content", ""))[:240],
+                            "reason_code": denial.get("reason_code", ""),
+                            **event,
+                        },
                     )
             elif event_type == "compact_boundary":
                 notifications.enqueue(
-                    "Context compacted into a working summary.",
+                    str(event.get("compact_reason") or "Context compacted into a working summary."),
                     kind="compact_boundary",
                     tone="info",
                     channel="context",
@@ -391,6 +398,7 @@ class ChatSession:
         self.services = self._build_services(self.workspace_root)
         self.services.context_visualizer = ContextVisualizer(self)
         self.services.diagnostics = DiagnosticsService(self)
+        self.services.context_budget = ContextBudgetService(self)
         self.services.permission_manager.set_mode(previous_permission_mode)
         self.services.settings_manager.runtime = previous_settings
         self.session_store.retarget_workspace(self.workspace_root)
@@ -431,6 +439,7 @@ class ChatSession:
             context_visualizer=None,
             search_service=WorkspaceSearch(workspace_root, Path.home() / ".anuris_debug_runs"),
             diagnostics=None,
+            context_budget=None,
         )
 
     def _build_team_runtime(self, workspace_root: Path) -> SessionTeamRuntime:

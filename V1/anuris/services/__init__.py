@@ -1,5 +1,6 @@
 """Session-scoped services for the expanded Claude Code-style runtime."""
 
+from .context_budget import ContextBudgetService
 from .context_files import ContextFileTracker
 from .context_viz import ContextVisualizer
 from .diagnostics_ext import DiagnosticsService
@@ -17,6 +18,7 @@ from .usage import UsageTracker
 from .worktree import WorktreeManager
 
 __all__ = [
+    "ContextBudgetService",
     "ContextFileTracker",
     "ContextVisualizer",
     "DiagnosticsService",

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
+from .base import ToolPermissionError
+
 
 class ToolRegistry:
     """Registry and filter layer for active tools."""
@@ -27,7 +29,15 @@ class ToolRegistry:
         if not tool:
             raise ValueError(f"Unknown tool: {name}")
         if allowed_tool_names is not None and name not in allowed_tool_names:
-            raise PermissionError(f"Tool {name} is not enabled in this context")
-        if not tool.can_expose(context):
-            raise PermissionError(f"Tool {name} is not permitted in {context.permission_context.mode} mode")
+            raise ToolPermissionError(
+                {
+                    "reason_code": "not_enabled_in_context",
+                    "message": f"Tool {name} is not enabled in this context.",
+                    "tool_name": name,
+                    "mode": context.permission_context.mode,
+                }
+            )
+        decision = tool.can_expose_detail(context)
+        if not decision["allowed"]:
+            raise ToolPermissionError(decision["denial"] or {"message": f"Tool {name} is not permitted."})
         return tool

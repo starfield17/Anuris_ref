@@ -43,6 +43,8 @@ def _looks_write_like(command: str) -> bool:
 class BashTool(BaseTool):
     name = "bash"
     description = "Run a shell command in the workspace."
+    search_hint = "run shell commands, inspect git, execute tests"
+    usage_policy = "Prefer read-only inspection commands; write-like commands require non-readonly policy."
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -59,17 +61,28 @@ class BashTool(BaseTool):
         timeout = int(args.get("timeout_sec", 20))
         if not command:
             raise ValueError("command is required")
-        if not context.permission_context.permits_command(command):
+        denial = context.permission_context.explain_command_denial(command)
+        if denial is not None:
             return ToolExecutionResult(
                 model_content="Command blocked by local sandbox exclude rules.",
                 is_error=True,
                 summary=f"bash excluded: {command}",
+                metadata={"permission_denial": denial, "command": command},
             )
         if context.permission_context.mode == "readonly" and _looks_write_like(command):
             return ToolExecutionResult(
                 model_content="Readonly subagent cannot run write-like shell commands.",
                 is_error=True,
                 summary=f"bash denied: {command}",
+                metadata={
+                    "permission_denial": {
+                        "reason_code": "readonly_write_like_command",
+                        "message": "Readonly subagent cannot run write-like shell commands.",
+                        "command": command,
+                        "mode": context.permission_context.mode,
+                    },
+                    "command": command,
+                },
             )
 
         completed = subprocess.run(
@@ -97,6 +110,9 @@ class BashTool(BaseTool):
 class ReadFileTool(BaseTool):
     name = "read_file"
     description = "Read a UTF-8 text file from the workspace."
+    search_hint = "inspect code, config, docs, and transcripts"
+    permission_type = "read"
+    usage_policy = "Use for targeted reads; prefer line ranges when only part of a file is needed."
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -130,6 +146,9 @@ class ReadFileTool(BaseTool):
 class WriteFileTool(BaseTool):
     name = "write_file"
     description = "Write a full text file in the workspace."
+    search_hint = "create or replace file contents"
+    permission_type = "edit"
+    usage_policy = "Use for whole-file writes when replacing the entire contents is simpler than patching."
     requires_write = True
 
     def input_schema(self) -> Dict[str, Any]:
@@ -172,6 +191,9 @@ class WriteFileTool(BaseTool):
 class EditFileTool(BaseTool):
     name = "edit_file"
     description = "Replace text inside an existing workspace file."
+    search_hint = "patch an existing file with targeted edits"
+    permission_type = "edit"
+    usage_policy = "Prefer for localized changes that preserve surrounding file content."
     requires_write = True
 
     def input_schema(self) -> Dict[str, Any]:
@@ -218,6 +240,8 @@ class EditFileTool(BaseTool):
 class GlobTool(BaseTool):
     name = "glob"
     description = "Find files in the workspace using glob patterns."
+    search_hint = "find files by name or wildcard pattern"
+    permission_type = "read"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -245,6 +269,8 @@ class GlobTool(BaseTool):
 class GrepTool(BaseTool):
     name = "grep"
     description = "Search workspace files for a text pattern."
+    search_hint = "search code or docs for symbols, strings, or errors"
+    permission_type = "read"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -292,6 +318,11 @@ class GrepTool(BaseTool):
 class TodoWriteTool(BaseTool):
     name = "todo_write"
     description = "Replace the in-memory todo board for the session."
+    search_hint = "track progress for multi-step work"
+    permission_type = "coordination"
+    usage_policy = (
+        "Use proactively for complex multi-step tasks, and keep exactly one item in_progress whenever work is active."
+    )
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -317,6 +348,8 @@ class TodoWriteTool(BaseTool):
 class TaskCreateTool(BaseTool):
     name = "task_create"
     description = "Create a persistent task on disk."
+    search_hint = "persist a task for later claiming or governance"
+    permission_type = "edit"
     requires_write = True
 
     def input_schema(self) -> Dict[str, Any]:
@@ -340,6 +373,8 @@ class TaskCreateTool(BaseTool):
 class TaskGetTool(BaseTool):
     name = "task_get"
     description = "Read one persistent task."
+    search_hint = "inspect one persistent task"
+    permission_type = "read"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -358,6 +393,8 @@ class TaskGetTool(BaseTool):
 class TaskUpdateTool(BaseTool):
     name = "task_update"
     description = "Update a persistent task status, owner, or dependencies."
+    search_hint = "change task status, owner, or dependencies"
+    permission_type = "edit"
     requires_write = True
 
     def input_schema(self) -> Dict[str, Any]:
@@ -387,6 +424,8 @@ class TaskUpdateTool(BaseTool):
 class TaskListTool(BaseTool):
     name = "task_list"
     description = "List persistent tasks."
+    search_hint = "show the persistent task board"
+    permission_type = "read"
 
     def input_schema(self) -> Dict[str, Any]:
         return {"type": "object", "properties": {}}
@@ -400,6 +439,9 @@ class TaskListTool(BaseTool):
 class SkillTool(BaseTool):
     name = "load_skill"
     description = "Load a local skill body from the workspace skill directories."
+    search_hint = "invoke a workspace skill or slash-command-like prompt"
+    permission_type = "coordination"
+    usage_policy = "Use before responding when a skill clearly matches the user's requested workflow."
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -418,6 +460,8 @@ class SkillTool(BaseTool):
 class ToolSearchTool(BaseTool):
     name = "tool_search"
     description = "Search the active tool catalog by keyword."
+    search_hint = "discover relevant tools by name, description, or usage hint"
+    permission_type = "read"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -434,7 +478,7 @@ class ToolSearchTool(BaseTool):
             raise ValueError("query is required")
         matches = []
         for tool in context.metadata.get("tool_registry", []):
-            haystack = f"{tool.name} {tool.description}".lower()
+            haystack = f"{tool.name} {tool.description} {getattr(tool, 'search_hint', '')} {getattr(tool, 'usage_policy', '')}".lower()
             if query in haystack and tool.can_expose(context):
                 matches.append(f"- {tool.name}: {tool.description}")
         rendered = "\n".join(matches) or "No matching tools."
@@ -444,6 +488,8 @@ class ToolSearchTool(BaseTool):
 class ListMcpResourcesTool(BaseTool):
     name = "list_mcp_resources"
     description = "List configured local MCP resources."
+    search_hint = "inspect MCP resource catalog"
+    permission_type = "read"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -461,6 +507,8 @@ class ListMcpResourcesTool(BaseTool):
 class ReadMcpResourceTool(BaseTool):
     name = "read_mcp_resource"
     description = "Read the content of a configured local MCP resource."
+    search_hint = "read an MCP resource into the current context"
+    permission_type = "read"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -484,6 +532,8 @@ class ReadMcpResourceTool(BaseTool):
 class EnterWorktreeTool(BaseTool):
     name = "enter_worktree"
     description = "Switch the active workspace to another worktree or directory."
+    search_hint = "enter another worktree or directory"
+    permission_type = "edit"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -502,6 +552,8 @@ class EnterWorktreeTool(BaseTool):
 class ExitWorktreeTool(BaseTool):
     name = "exit_worktree"
     description = "Return to the primary workspace root."
+    search_hint = "return to the primary workspace"
+    permission_type = "edit"
 
     def input_schema(self) -> Dict[str, Any]:
         return {"type": "object", "properties": {}}
@@ -515,6 +567,9 @@ class ExitWorktreeTool(BaseTool):
 class AgentTaskTool(BaseTool):
     name = "task"
     description = "Delegate a bounded sub-task to a temporary subagent."
+    search_hint = "delegate bounded work to a temporary subagent"
+    permission_type = "coordination"
+    usage_policy = "Use for bounded, self-contained subtasks rather than urgent blocking work that needs tight local control."
     coordination_tool = True
 
     def input_schema(self) -> Dict[str, Any]:

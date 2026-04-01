@@ -331,6 +331,9 @@ class CommandDispatcher:
         diagnostics = self.session.services.diagnostics or None
         diagnostic_snapshot = diagnostics.snapshot() if diagnostics else {}
         context_snapshot = self.session.services.context_visualizer.analyze()
+        budget_snapshot = (
+            self.session.services.context_budget.analyze().to_dict() if self.session.services.context_budget else {}
+        )
         notice_summary = self.session.services.notification_center.summary_counts()
         task_summary = self.session.services.task_manager.summary_counts()
         team_summary = self.session.team_runtime.summary_counts() if hasattr(self.session, "team_runtime") else {}
@@ -362,6 +365,7 @@ class CommandDispatcher:
                 "title": "Context",
                 "lines": [
                     f"approx_chars={context_snapshot['approx_chars']}",
+                    f"budget={budget_snapshot.get('approx_chars', 0)}/{budget_snapshot.get('soft_limit', 0)} compact={'yes' if budget_snapshot.get('should_compact') else 'no'}",
                     f"compact_boundaries={context_snapshot['compact_count']}",
                     f"conversation_items={len(context_snapshot['groups']['conversation'])}",
                     f"file_reads={len(context_snapshot['groups']['file_reads'])}",
@@ -1031,7 +1035,15 @@ class CommandDispatcher:
         if not query:
             self.ui.display_message("Usage: /history-search <query>", style="yellow")
             return
-        results = self.session.services.search_service.search_sessions(query)
+        search_service = self.session.services.search_service
+        seen = set()
+        results = []
+        for item in [*search_service.search_sessions(query), *search_service.search_messages(query)]:
+            key = (item.kind, item.source_id, item.message_index, item.path)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(item)
         self.ui.display_message(self._render_search_results(results), style="cyan")
 
     def _handle_trace_search(self, args: str) -> None:
