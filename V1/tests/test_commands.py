@@ -1,6 +1,7 @@
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -26,6 +27,106 @@ class FakeModel:
         if self.responses:
             return self.responses.pop(0)
         return {"choices": [{"message": {"content": "unused"}}]}
+
+
+def tool_call(name, arguments, tool_id="call_1"):
+    return {
+        "id": tool_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments,
+        },
+    }
+
+
+class TeamCommandModel:
+    def __init__(self):
+        self.calls = []
+
+    def create_completion(self, messages, stream, tools=None, tool_choice=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "stream": stream,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            }
+        )
+        system_text = str(messages[0].get("content", "")) if messages else ""
+        blob = "\n".join(str(message.get("content", "")) for message in messages if isinstance(message, dict))
+        if "You are teammate" not in system_text:
+            return {"choices": [{"message": {"content": "unused"}}]}
+
+        if '"type": "shutdown_request"' in blob:
+            request_id = "unknown"
+            for message in reversed(messages):
+                content = str(message.get("content", ""))
+                if '"type": "shutdown_request"' not in content:
+                    continue
+                marker = '"request_id": "'
+                if marker in content:
+                    request_id = content.split(marker, 1)[1].split('"', 1)[0]
+                    break
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                tool_call(
+                                    "shutdown_response",
+                                    json.dumps({"request_id": request_id, "approve": True, "reason": "done"}),
+                                    "shutdown_1",
+                                ),
+                                tool_call("idle", "{}", "idle_shutdown"),
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        if "please ack the lead" in blob and "acknowledged by teammate" not in blob:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                tool_call("read_inbox", "{}", "read_1"),
+                                tool_call(
+                                    "send_message",
+                                    json.dumps({"to": "lead", "content": "acknowledged by teammate", "msg_type": "message"}),
+                                    "send_1",
+                                ),
+                                tool_call("idle", "{}", "idle_ack"),
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        if "Plan submitted" not in blob:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                tool_call("plan_submit", json.dumps({"plan": "1. inspect\n2. report"}), "plan_1"),
+                                tool_call(
+                                    "send_message",
+                                    json.dumps({"to": "lead", "content": "initial report ready", "msg_type": "message"}),
+                                    "send_0",
+                                ),
+                                tool_call("idle", "{}", "idle_0"),
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        return {"choices": [{"message": {"content": "idle"}}]}
 
 
 class CommandDispatcherTests(unittest.TestCase):
@@ -364,3 +465,59 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertEqual(restored.services.settings_manager.runtime.theme, "dark")
         self.assertEqual(restored.services.settings_manager.runtime.output_style, "plain")
         self.assertTrue(restored.services.settings_manager.runtime.vim_mode)
+
+    def test_agents_command_drives_team_inbox_and_governance(self):
+        session = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=TeamCommandModel(),
+            workspace_root=self.workspace,
+            session_id="teamcmd",
+        )
+
+        status = session.handle_input("/agents")
+        self.assertIn("Team runtime:", status.output_text)
+        self.assertIn(".anuris_team", status.output_text)
+
+        spawned = session.handle_input("/agents spawn alice reviewer -- Inspect the repo and report back")
+        self.assertIn("Spawned 'alice'", spawned.output_text)
+
+        deadline = time.time() + 2
+        lead_snapshot = ""
+        while time.time() < deadline:
+            lead_snapshot = session.team_runtime.read_inbox("lead")
+            if "initial report ready" in lead_snapshot:
+                break
+            time.sleep(0.05)
+        self.assertIn("initial report ready", lead_snapshot)
+
+        plans = session.handle_input("/agents plans")
+        self.assertIn("from=alice [pending]", plans.output_text)
+        request_id = next(iter(session.team_runtime.team_manager._plan_requests.keys()))
+
+        approved = session.handle_input(f"/agents approve {request_id} looks-good")
+        self.assertIn("approved", approved.output_text)
+
+        sent = session.handle_input("/agents send alice please ack the lead")
+        self.assertIn("Sent message to alice", sent.output_text)
+
+        deadline = time.time() + 2
+        lead_ack = ""
+        while time.time() < deadline:
+            lead_ack = session.team_runtime.read_inbox("lead")
+            if "acknowledged by teammate" in lead_ack:
+                break
+            time.sleep(0.05)
+        self.assertIn("acknowledged by teammate", lead_ack)
+
+        shutdown = session.handle_input("/agents shutdown request alice")
+        self.assertIn("Shutdown request", shutdown.output_text)
+        shutdown_id = next(iter(session.team_runtime.team_manager._shutdown_requests.keys()))
+
+        deadline = time.time() + 2
+        shutdown_status = ""
+        while time.time() < deadline:
+            shutdown_status = session.team_runtime.shutdown_status(shutdown_id)
+            if '"status": "approved"' in shutdown_status:
+                break
+            time.sleep(0.05)
+        self.assertIn('"status": "approved"', shutdown_status)

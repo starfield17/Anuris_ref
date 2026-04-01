@@ -1,6 +1,7 @@
 from .background import BackgroundManager
 from .compact import ContextCompactor
 from .loop import AgentLoopRunner, AgentRunResult
+from .session_team import SessionTeamRuntime
 from .skills import SkillLoader
 from .tasks import PersistentTaskManager
 from .team import TeamManager
@@ -12,6 +13,7 @@ __all__ = [
     "AgentToolExecutor",
     "BackgroundManager",
     "ContextCompactor",
+    "SessionTeamRuntime",
     "SkillLoader",
     "TeamManager",
     "PersistentTaskManager",

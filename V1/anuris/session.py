@@ -29,6 +29,7 @@ from .services import (
 )
 from .tools import ToolRegistry, build_default_tools
 from .agent.skills import SkillLoader
+from .agent.session_team import SessionTeamRuntime
 from .agent.tasks import PersistentTaskManager
 from .agent.todo import TodoManager
 
@@ -158,6 +159,7 @@ class ChatSession:
             switch_workspace=self.switch_workspace,
             reset_workspace=self.reset_workspace,
         )
+        self.team_runtime = self._build_team_runtime(self.workspace_root)
         self.command_dispatcher = CommandDispatcher(self)
         if hasattr(self.ui, "bind_session"):
             self.ui.bind_session(self)
@@ -181,6 +183,7 @@ class ChatSession:
                 "user_input_received",
                 request_id=request_id,
                 request_kind=request_kind,
+                content=user_input,
                 attachment_paths=[attachment.path for attachment in added_attachments],
             )
 
@@ -356,6 +359,7 @@ class ChatSession:
         self.engine.workspace_root = self.workspace_root
         self.tool_registry = ToolRegistry(build_default_tools())
         self.engine.tool_registry = self.tool_registry
+        self.team_runtime = self._build_team_runtime(self.workspace_root)
         if hasattr(self.ui, "bind_session"):
             self.ui.bind_session(self)
 
@@ -380,6 +384,13 @@ class ChatSession:
             context_files=ContextFileTracker(workspace_root),
             usage_tracker=UsageTracker(),
             memory_manager=MemoryManager(workspace_root),
+        )
+
+    def _build_team_runtime(self, workspace_root: Path) -> SessionTeamRuntime:
+        return SessionTeamRuntime(
+            model=self.model,
+            workspace_root=workspace_root,
+            task_manager=self.services.task_manager,
         )
 
     def run_prompt_command(self, label: str, prompt: str) -> str:

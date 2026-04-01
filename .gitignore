@@ -18,6 +18,9 @@ dist/
 # Local Anuris debug files
 .anuris/
 .anuris_*
+.debug/
+.anuris_debug_runs/
+demo_artifacts/
 
 # Logs and temp files
 *.log

@@ -53,7 +53,12 @@ class CommandDispatcher:
         self._register("status", "Show session, git, context, and runtime status.", "/status", self._handle_status)
         self._register("model", "Show, pick, or update the active model.", "/model [name|pick]", self._handle_model)
         self._register("config", "Show the current runtime config.", "/config", self._handle_config)
-        self._register("agents", "Show subagent capability status.", "/agents", self._handle_agents)
+        self._register(
+            "agents",
+            "Inspect or control teammates, inbox, and governance flows.",
+            "/agents [status|list|spawn|inbox|send|broadcast|shutdown|plans|approve|reject]",
+            self._handle_agents,
+        )
         self._register("permissions", "Show or update the active permission mode.", "/permissions [mode]", self._handle_permissions)
         self._register("session", "Inspect, preview, list, or pick saved sessions.", "/session [show|list|preview|pick]", self._handle_session)
         self._register("resume", "Resume a stored session by id or latest.", "/resume [session_id]", self._handle_resume)
@@ -295,11 +300,99 @@ class CommandDispatcher:
         self.ui.display_message(Panel.fit(rendered, border_style="magenta"))
 
     def _handle_agents(self, args: str) -> None:
-        del args
+        raw = args.strip()
+        if not raw or raw == "status":
+            lines = [
+                self.session.team_runtime.describe(),
+                "",
+                "Subagent note: model-facing `task` delegates bounded work via a fresh subagent context.",
+            ]
+            self.ui.display_message(Panel.fit("\n".join(lines), border_style="cyan"))
+            return
+
+        parts = shlex.split(raw)
+        action = parts[0].lower()
+
+        if action == "list":
+            self.ui.display_message(self.session.team_runtime.list_members(), style="cyan")
+            return
+
+        if action == "spawn":
+            head, prompt = self._split_prompt_tail(raw[len("spawn") :].strip())
+            spawn_parts = shlex.split(head)
+            if len(spawn_parts) < 1 or not prompt:
+                self.ui.display_message("Usage: /agents spawn <name> [role] -- <prompt>", style="yellow")
+                return
+            name = spawn_parts[0]
+            role = " ".join(spawn_parts[1:]).strip() or "teammate"
+            self.ui.display_message(self.session.team_runtime.spawn(name, role, prompt), style="green")
+            return
+
+        if action == "inbox":
+            name = parts[1] if len(parts) > 1 else "lead"
+            self.ui.display_message(self.session.team_runtime.read_inbox(name), style="cyan")
+            return
+
+        if action == "send":
+            if len(parts) < 3:
+                self.ui.display_message("Usage: /agents send <to> <message...>", style="yellow")
+                return
+            to = parts[1]
+            content = self._tail_after_tokens(raw, 2)
+            self.ui.display_message(self.session.team_runtime.send_message(to, content), style="green")
+            return
+
+        if action == "broadcast":
+            content = self._tail_after_tokens(raw, 1)
+            if not content:
+                self.ui.display_message("Usage: /agents broadcast <message...>", style="yellow")
+                return
+            self.ui.display_message(self.session.team_runtime.broadcast(content), style="green")
+            return
+
+        if action == "shutdown":
+            mode = parts[1].lower() if len(parts) > 1 else "list"
+            if mode == "request":
+                if len(parts) < 3:
+                    self.ui.display_message("Usage: /agents shutdown request <teammate>", style="yellow")
+                    return
+                self.ui.display_message(self.session.team_runtime.request_shutdown(parts[2]), style="green")
+                return
+            if mode == "status":
+                if len(parts) < 3:
+                    self.ui.display_message(self.session.team_runtime.list_shutdown_requests(), style="cyan")
+                    return
+                self.ui.display_message(self.session.team_runtime.shutdown_status(parts[2]), style="cyan")
+                return
+            if mode == "list":
+                self.ui.display_message(self.session.team_runtime.list_shutdown_requests(), style="cyan")
+                return
+            self.ui.display_message("Usage: /agents shutdown <request|status|list> ...", style="yellow")
+            return
+
+        if action in {"plans", "plan"}:
+            self.ui.display_message(self.session.team_runtime.list_plan_requests(), style="cyan")
+            return
+
+        if action in {"approve", "reject"}:
+            if len(parts) < 2:
+                self.ui.display_message(f"Usage: /agents {action} <request_id> [feedback...]", style="yellow")
+                return
+            request_id = parts[1]
+            feedback = self._tail_after_tokens(raw, 2)
+            self.ui.display_message(
+                self.session.team_runtime.review_plan(
+                    request_id,
+                    approve=action == "approve",
+                    feedback=feedback,
+                ),
+                style="green",
+            )
+            return
+
         self.ui.display_message(
-            "Subagent tool is available through the model-facing `task` tool. "
-            "Readonly subagents expose bash/read/search/skill/task read APIs by default.",
-            style="cyan",
+            "Usage: /agents [status|list|spawn|inbox|send|broadcast|shutdown|plans|approve|reject]",
+            style="yellow",
         )
 
     def _handle_permissions(self, args: str) -> None:
@@ -514,6 +607,23 @@ class CommandDispatcher:
             selected = self.ui.select_option(title, options, default_index=default_index)
             return selected or ""
         return ""
+
+    @staticmethod
+    def _split_prompt_tail(raw: str) -> tuple[str, str]:
+        if " -- " in raw:
+            head, prompt = raw.split(" -- ", 1)
+            return head.strip(), prompt.strip()
+        parts = shlex.split(raw)
+        if len(parts) < 2:
+            return raw.strip(), ""
+        return " ".join(parts[:2]).strip(), " ".join(parts[2:]).strip()
+
+    @staticmethod
+    def _tail_after_tokens(raw: str, count: int) -> str:
+        parts = shlex.split(raw)
+        if len(parts) <= count:
+            return ""
+        return " ".join(parts[count:]).strip()
 
     def _model_options(self) -> List[str]:
         options = [

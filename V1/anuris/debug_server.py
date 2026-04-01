@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -145,6 +146,10 @@ class DebugSessionRecorder:
                         "",
                     ]
                 )
+            elif event_type == "user_input_received":
+                content = str(event.get("content", "") or "").strip()
+                if content.startswith("/"):
+                    lines.extend(["### Injected Command", "", "```text", content, "```", ""])
             elif event_type == "user_message":
                 lines.extend(["### User", "", str(event.get("content", "")), ""])
             elif event_type == "assistant_reasoning":
@@ -271,6 +276,116 @@ class DebugSessionManager:
             if key in payload and payload[key] is not None:
                 config_dict[key] = payload[key]
         return Config.from_dict(config_dict)
+
+
+class DebugTraceRunner:
+    """Runs injected debug steps against one session and exports a Markdown trace."""
+
+    def __init__(self, manager: DebugSessionManager):
+        self.manager = manager
+
+    def run_trace(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        session_payload = dict(payload.get("session") or {})
+        steps = payload.get("steps") or []
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("Trace payload must include a non-empty steps[] list")
+
+        session_id = str(session_payload.get("session_id") or "")
+        if session_id and session_id in self.manager.sessions:
+            created = self.manager.get_session(session_id)
+        else:
+            created = self.manager.create_session(session_payload)
+            session_id = created["session_id"]
+
+        step_results: List[Dict[str, Any]] = []
+        for index, raw_step in enumerate(steps, start=1):
+            if not isinstance(raw_step, dict):
+                raise ValueError(f"Step {index} must be an object")
+            step = dict(raw_step)
+            kind = str(step.get("kind", "input")).strip().lower() or "input"
+            if kind in {"input", "message", "command"}:
+                result = self._run_input_step(session_id, step)
+                step_results.append({"index": index, "kind": kind, **result})
+                continue
+            if kind in {"sleep", "wait"}:
+                seconds = max(0.0, float(step.get("seconds", step.get("duration", 0.0)) or 0.0))
+                time.sleep(seconds)
+                step_results.append({"index": index, "kind": kind, "seconds": seconds})
+                continue
+            if kind == "poll":
+                result = self._run_poll_step(session_id, step)
+                step_results.append({"index": index, "kind": kind, **result})
+                continue
+            raise ValueError(f"Unsupported trace step kind: {kind}")
+
+        transcript = self.manager.get_transcript(session_id)
+        export_path = self._resolve_export_path(payload, session_id)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        export_path.write_text(transcript["transcript"], encoding="utf-8")
+
+        return {
+            "session_id": session_id,
+            "session": self.manager.get_session(session_id),
+            "steps": step_results,
+            "transcript_path": transcript["transcript_path"],
+            "markdown_path": str(export_path),
+            "events_path": self.manager.get_events(session_id)["events_path"],
+        }
+
+    def _run_input_step(self, session_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
+        content = str(step.get("content", "") or "").strip()
+        if not content:
+            raise ValueError("Input step requires non-empty content")
+        request_kind = str(step.get("request_kind", "message") or "message")
+        payload: Dict[str, Any]
+        if request_kind == "message":
+            payload = {"message": content, "attachments": step.get("attachments") or []}
+        else:
+            payload = {"prompt": content, "attachments": step.get("attachments") or []}
+        result = self.manager.submit_message(session_id, payload, request_kind=request_kind)
+        return {
+            "content": content,
+            "request_kind": request_kind,
+            "final_text": result.get("final_text", ""),
+            "output_text": result.get("output_text", ""),
+            "round_count": result.get("round_count", 0),
+        }
+
+    def _run_poll_step(self, session_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
+        content = str(step.get("content", "") or "").strip()
+        contains = str(step.get("contains", "") or "")
+        if not content:
+            raise ValueError("Poll step requires non-empty content")
+        if not contains:
+            raise ValueError("Poll step requires non-empty contains")
+        timeout_sec = max(0.1, float(step.get("timeout_sec", 3.0) or 3.0))
+        interval_sec = max(0.01, float(step.get("interval_sec", 0.1) or 0.1))
+        deadline = time.monotonic() + timeout_sec
+        last_result: Dict[str, Any] = {}
+        request_kind = str(step.get("request_kind", "message") or "message")
+
+        while time.monotonic() < deadline:
+            last_result = self._run_input_step(session_id, {"content": content, "request_kind": request_kind})
+            haystack = f"{last_result.get('final_text', '')}\n{last_result.get('output_text', '')}"
+            if contains in haystack:
+                return {
+                    "content": content,
+                    "contains": contains,
+                    "matched": True,
+                    **last_result,
+                }
+            time.sleep(interval_sec)
+
+        raise RuntimeError(
+            f"Timed out waiting for {contains!r} from injected input {content!r}. "
+            f"Last output: {last_result.get('output_text', '')}"
+        )
+
+    def _resolve_export_path(self, payload: Dict[str, Any], session_id: str) -> Path:
+        explicit_path = payload.get("markdown_path")
+        if explicit_path:
+            return Path(str(explicit_path)).expanduser().resolve()
+        return (self.manager.debug_dir / f"{session_id}.md").resolve()
 
 
 class DebugHTTPServer:

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from anuris.config import Config
-from anuris.debug_server import DebugSessionManager
+from anuris.debug_server import DebugSessionManager, DebugTraceRunner
 from anuris.session import ChatSession
 
 
@@ -72,3 +72,49 @@ class SessionAndDebugTests(unittest.TestCase):
 
         transcript = manager.get_transcript("debug1")
         self.assertIn("Headless reply.", transcript["transcript"])
+
+    def test_debug_session_manager_records_injected_commands_in_transcript(self):
+        manager = DebugSessionManager(
+            self.config,
+            workspace_root=self.workspace,
+            debug_dir=self.workspace / ".debug",
+            model_factory=lambda config: FakeModel([]),
+        )
+        manager.create_session({"session_id": "debugcmd"})
+        result = manager.submit_message("debugcmd", {"message": "/theme dark"})
+        self.assertIn("Theme set to dark", result["output_text"])
+
+        transcript = manager.get_transcript("debugcmd")
+        self.assertIn("Injected Command", transcript["transcript"])
+        self.assertIn("/theme dark", transcript["transcript"])
+        self.assertIn("Theme set to dark", transcript["transcript"])
+
+    def test_debug_trace_runner_exports_markdown_from_injected_steps(self):
+        manager = DebugSessionManager(
+            self.config,
+            workspace_root=self.workspace,
+            debug_dir=self.workspace / ".debug",
+            model_factory=lambda config: FakeModel([]),
+        )
+        runner = DebugTraceRunner(manager)
+        export_path = self.workspace / "trace.md"
+
+        result = runner.run_trace(
+            {
+                "session": {"session_id": "trace1", "session_name": "trace one"},
+                "steps": [
+                    {"kind": "input", "content": "/theme dark"},
+                    {"kind": "poll", "content": "/theme", "contains": "theme: dark", "timeout_sec": 1.0, "interval_sec": 0.05},
+                    {"kind": "input", "content": "/vim on"},
+                ],
+                "markdown_path": str(export_path),
+            }
+        )
+
+        self.assertEqual(result["session_id"], "trace1")
+        self.assertEqual(Path(result["markdown_path"]), export_path.resolve())
+        self.assertTrue(export_path.exists())
+        content = export_path.read_text(encoding="utf-8")
+        self.assertIn("/theme dark", content)
+        self.assertIn("Theme set to dark", content)
+        self.assertIn("/vim on", content)
