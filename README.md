@@ -121,6 +121,7 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/memory [show|append|clear]`
 * `/rename [name]`
 * `/export [filename]`
+* `/copy [full|code [index]|message [index]]`
 
 ### Keyboard Shortcuts
 

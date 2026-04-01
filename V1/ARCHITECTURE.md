@@ -172,6 +172,7 @@ Interactive commands:
 - `/memory [show|append|clear]`
 - `/rename [name]`
 - `/export [filename]`
+- `/copy [full|code [index]|message [index]]`
 
 ## 6. Built-in Tools
 

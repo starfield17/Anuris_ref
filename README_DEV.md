@@ -126,13 +126,14 @@ Current slash commands:
 - `/memory [show|append|clear]`
 - `/rename [name]`
 - `/export [filename]`
+- `/copy [full|code [index]|message [index]]`
 
 New grouped command registrations live under `V1/anuris/command_specs/`:
 
 - `analysis.py` for `/cost`, `/diff`, `/review`, `/plan`
 - `events.py` for `/hooks`
 - `inspection.py` for `/summary`, `/context`, `/memory`
-- `session_ops.py` for `/rename`, `/export`
+- `session_ops.py` for `/rename`, `/export`, `/copy`
 
 ## 4) Test Commands
 
