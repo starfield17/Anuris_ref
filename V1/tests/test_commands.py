@@ -166,3 +166,26 @@ class CommandDispatcherTests(unittest.TestCase):
 
         plan_response = review_session.handle_input("/plan add MCP support")
         self.assertIn("Implementation plan drafted.", plan_response.output_text)
+
+    def test_summary_context_and_memory_commands(self):
+        self.session.session_store.add_user_message("context user")
+        self.session.session_store.add_assistant_message("context assistant")
+        self.session.services.context_files.record(self.workspace / "note.txt")
+
+        response = self.session.handle_input("/summary")
+        self.assertIn("Session summary", response.output_text)
+        self.assertIn("context assistant", response.output_text)
+
+        response = self.session.handle_input("/context")
+        self.assertIn("messages_total:", response.output_text)
+        self.assertIn("Files In Context", response.output_text)
+        self.assertIn("note.txt", response.output_text)
+
+        response = self.session.handle_input("/memory append remember the build steps")
+        self.assertIn("Added memory", response.output_text)
+
+        response = self.session.handle_input("/memory show")
+        self.assertIn("remember the build steps", response.output_text)
+
+        response = self.session.handle_input("/memory clear")
+        self.assertIn("cleared", response.output_text.lower())

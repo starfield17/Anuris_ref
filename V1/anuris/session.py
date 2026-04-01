@@ -18,6 +18,7 @@ from .services import (
     ContextFileTracker,
     HookManager,
     MCPManager,
+    MemoryManager,
     PermissionManager,
     PluginManager,
     SessionCatalog,
@@ -348,6 +349,7 @@ class ChatSession:
             hook_manager=HookManager(workspace_root),
             context_files=ContextFileTracker(workspace_root),
             usage_tracker=UsageTracker(),
+            memory_manager=MemoryManager(workspace_root),
         )
 
     def run_prompt_command(self, label: str, prompt: str) -> str:

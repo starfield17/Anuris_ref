@@ -43,6 +43,7 @@ class SessionServices:
     hook_manager: Any
     context_files: Any
     usage_tracker: Any
+    memory_manager: Any = None
 
 
 @dataclass

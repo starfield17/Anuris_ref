@@ -191,6 +191,47 @@ class SessionStore:
             ]
         )
 
+    def context_report(self) -> str:
+        role_counts: dict[str, int] = {}
+        compact_boundaries = 0
+        tool_results = 0
+        reasoning_chars = 0
+        for message in self.messages:
+            role_counts[message.role] = role_counts.get(message.role, 0) + 1
+            if message.kind == "compact_boundary":
+                compact_boundaries += 1
+            if message.kind == "tool_result":
+                tool_results += 1
+            reasoning_chars += len(message.reasoning or "")
+
+        lines = [
+            f"messages_total: {len(self.messages)}",
+            f"approx_chars: {self.approximate_size()}",
+            f"compact_boundaries: {compact_boundaries}",
+            f"tool_results: {tool_results}",
+            f"reasoning_chars: {reasoning_chars}",
+        ]
+        for role in sorted(role_counts):
+            lines.append(f"{role}_messages: {role_counts[role]}")
+        return "\n".join(lines)
+
+    def summary_report(self, limit: int = 8) -> str:
+        if len(self.messages) <= 1:
+            return "No conversation history yet."
+
+        lines = [
+            f"Session summary for {self.session_id}",
+            "",
+            f"Total messages: {len(self.messages)}",
+            f"Approx context size: {self.approximate_size()} chars",
+            "",
+            "Recent timeline:",
+        ]
+        for message in self.messages[-limit:]:
+            title = f"{message.role}:{message.kind}" if message.kind != "message" else message.role
+            lines.append(f"- {title}: {message.preview(180) or '(empty)'}")
+        return "\n".join(lines)
+
     def write_transcript(self) -> Path:
         transcript_path = self.session_dir / "transcript.md"
         lines = [
