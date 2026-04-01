@@ -64,6 +64,10 @@ python Anuris_rebuild.py --api-key <YOUR_API_KEY> --model <MODEL_NAME>
 Tool mode is enabled by default. Use `/agent off` to temporarily disable
 model-facing tools and keep the session in plain completion mode.
 
+Interactive mode defaults to the `claude` theme. Use `/theme dark` for a
+darker palette, or `/theme toggle` / `/theme switch` to flip between `claude`
+and `dark`.
+
 ### Headless Debug Server
 
 Start a local HTTP debug server for LLM agents and automated debugging:
@@ -114,7 +118,7 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/branch`
 * `/env`
 * `/output-style [plain|rich]`
-* `/theme [name]`
+* `/theme [name|toggle|switch]`
 * `/vim [on|off|status]`
 * `/cost`
 * `/diff [full|pathspec]`

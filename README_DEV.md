@@ -114,7 +114,7 @@ Current slash commands:
 - `/branch`
 - `/env`
 - `/output-style [plain|rich]`
-- `/theme [name]`
+- `/theme [name|toggle|switch]`
 - `/vim [on|off|status]`
 - `/cost`
 - `/diff [full|pathspec]`
@@ -132,6 +132,8 @@ Current slash commands:
 
 - `V1/anuris/ui.py` now renders a Claude Code-inspired terminal shell
 - Default runtime theme is `claude`
+- Available themes are `claude`, `dark`, `midnight`, and `default`
+- `/theme toggle` and `/theme switch` alternate between `claude` and `dark`
 - Interactive rendering distinguishes welcome/status, assistant replies,
   reasoning panels, and tool/activity lines
 

@@ -163,7 +163,7 @@ Interactive commands:
 - `/branch`
 - `/env`
 - `/output-style [plain|rich]`
-- `/theme [name]`
+- `/theme [name|toggle|switch]`
 - `/vim [on|off|status]`
 - `/cost`
 - `/diff [full|pathspec]`
