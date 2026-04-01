@@ -94,17 +94,18 @@ Current slash commands:
 - `/attach <glob...>`
 - `/detach [index]`
 - `/files`
+- `/add-dir [list|clear|remove <path>|<path>...]`
 - `/agent [on|off|status]`
 - `/compact [focus]`
 - `/todos`
 - `/tasks`
 - `/skills`
 - `/status`
-- `/model [name]`
+- `/model [name|pick]`
 - `/config`
 - `/agents`
 - `/permissions [mode]`
-- `/session [show|list]`
+- `/session [show|list|preview|pick]`
 - `/resume [session_id]`
 - `/rewind [turns]`
 - `/mcp <servers|list|add-resource|read>`
@@ -113,10 +114,13 @@ Current slash commands:
 - `/worktree <list|enter|exit>`
 - `/branch`
 - `/env`
-- `/output-style [plain|rich]`
-- `/theme [name|toggle|switch]`
+- `/output-style [plain|rich|pick]`
+- `/theme [name|pick|toggle|switch]`
 - `/vim [on|off|status]`
 - `/cost`
+- `/usage`
+- `/stats`
+- `/doctor`
 - `/diff [full|pathspec]`
 - `/review [pr_number]`
 - `/plan [open|show|description]`
@@ -127,6 +131,7 @@ Current slash commands:
 - `/rename [name]`
 - `/export [filename]`
 - `/copy [full|code [index]|message [index]]`
+- `/commit [message]`
 
 ### Interactive UI
 
@@ -140,9 +145,12 @@ Current slash commands:
 New grouped command registrations live under `V1/anuris/command_specs/`:
 
 - `analysis.py` for `/cost`, `/diff`, `/review`, `/plan`
+- `diagnostics.py` for `/usage`, `/stats`, `/doctor`
 - `events.py` for `/hooks`
 - `inspection.py` for `/summary`, `/context`, `/memory`
 - `session_ops.py` for `/rename`, `/export`, `/copy`
+- `workspace.py` for `/add-dir`
+- `workflow.py` for `/commit`
 
 ## 4) Test Commands
 

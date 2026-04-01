@@ -98,17 +98,18 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/attach <glob...>`
 * `/detach [index]`
 * `/files`
+* `/add-dir [list|clear|remove <path>|<path>...]`
 * `/agent [on|off|status]`
 * `/compact [focus]`
 * `/todos`
 * `/tasks`
 * `/skills`
 * `/status`
-* `/model [name]`
+* `/model [name|pick]`
 * `/config`
 * `/agents`
 * `/permissions [mode]`
-* `/session [show|list]`
+* `/session [show|list|preview|pick]`
 * `/resume [session_id]`
 * `/rewind [turns]`
 * `/mcp <servers|list|add-resource|read>`
@@ -117,10 +118,13 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/worktree <list|enter|exit>`
 * `/branch`
 * `/env`
-* `/output-style [plain|rich]`
-* `/theme [name|toggle|switch]`
+* `/output-style [plain|rich|pick]`
+* `/theme [name|pick|toggle|switch]`
 * `/vim [on|off|status]`
 * `/cost`
+* `/usage`
+* `/stats`
+* `/doctor`
 * `/diff [full|pathspec]`
 * `/review [pr_number]`
 * `/plan [open|show|description]`
@@ -131,6 +135,7 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/rename [name]`
 * `/export [filename]`
 * `/copy [full|code [index]|message [index]]`
+* `/commit [message]`
 
 ### Keyboard Shortcuts
 
