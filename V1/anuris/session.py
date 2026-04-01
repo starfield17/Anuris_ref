@@ -14,7 +14,17 @@ from .config import Config
 from .engine import PermissionContext, QueryEngine, SessionServices, SessionStore
 from .model import ChatModel
 from .prompts import prompt_manager
-from .services import MCPManager, PermissionManager, PluginManager, SessionCatalog, SettingsManager, WorktreeManager
+from .services import (
+    ContextFileTracker,
+    HookManager,
+    MCPManager,
+    PermissionManager,
+    PluginManager,
+    SessionCatalog,
+    SettingsManager,
+    UsageTracker,
+    WorktreeManager,
+)
 from .tools import ToolRegistry, build_default_tools
 from .agent.skills import SkillLoader
 from .agent.tasks import PersistentTaskManager
@@ -213,7 +223,10 @@ class ChatSession:
     def _handle_query_input(self, request_id: str, request_kind: str, user_input: str) -> SessionResponse:
         attachments = self.attachment_manager.prepare_for_api() if self.attachment_manager.attachments else []
         attachment_meta = [attachment.to_dict() for attachment in self.attachment_manager.attachments]
+        for attachment in self.attachment_manager.attachments:
+            self.services.context_files.record(attachment.path)
         self.attachment_manager.clear_attachments()
+        self.services.usage_tracker.record_query(user_input)
 
         allowed_tool_names = None if self.agent_mode else set()
         permission_context = self.services.permission_manager.create_context(
@@ -232,6 +245,7 @@ class ChatSession:
             self.ui.display_reasoning(result.reasoning_text)
         if result.final_text:
             self.ui.display_message(f"Anuris: {result.final_text}", style="bold blue")
+        self.services.usage_tracker.record_response(result.final_text, result.reasoning_text)
 
         output_text = self._consume_ui_output()
         return SessionResponse(
@@ -247,6 +261,15 @@ class ChatSession:
 
     def _on_engine_event(self, event: Dict[str, Any]) -> None:
         event_type = event.get("type", "")
+        if event_type == "tool_called":
+            self.services.usage_tracker.record_tool_call()
+        if event_type in {"tool_called", "tool_result", "compact_boundary", "request_finished"}:
+            hook_results = self.services.hook_manager.run(event_type, event)
+            if not self.is_headless:
+                for result in hook_results:
+                    if result["returncode"] != "0":
+                        message = result["stderr"] or result["stdout"] or "(no output)"
+                        self.ui.display_message(f"[hook:{event_type}] {message}", style="red")
         if not self.is_headless:
             if event_type == "agent_round_started":
                 self.ui.display_message(f"[agent] round {event.get('round')}", style="cyan")
@@ -322,7 +345,29 @@ class ChatSession:
             plugin_manager=plugin_manager,
             mcp_manager=MCPManager(workspace_root),
             settings_manager=SettingsManager(),
+            hook_manager=HookManager(workspace_root),
+            context_files=ContextFileTracker(workspace_root),
+            usage_tracker=UsageTracker(),
         )
+
+    def run_prompt_command(self, label: str, prompt: str) -> str:
+        self.services.usage_tracker.record_query(prompt)
+        permission_context = self.services.permission_manager.create_context(
+            agent_mode=self.agent_mode,
+            explicit_allowed_tools=None if self.agent_mode else set(),
+        )
+        result = self.engine.submit(
+            prompt,
+            permission_context=permission_context,
+            allowed_tool_names=None if self.agent_mode else set(),
+            metadata={"command_prompt": label},
+        )
+        self.services.usage_tracker.record_response(result.final_text, result.reasoning_text)
+        if result.reasoning_text:
+            self.ui.display_reasoning(result.reasoning_text)
+        if result.final_text:
+            self.ui.display_message(f"Anuris: {result.final_text}", style="bold blue")
+        return result.final_text
 
     def _next_request_id(self) -> str:
         self.request_counter += 1

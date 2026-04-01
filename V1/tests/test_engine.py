@@ -7,7 +7,17 @@ from anuris.engine import PermissionContext, QueryEngine, SessionServices, Sessi
 from anuris.agent.skills import SkillLoader
 from anuris.agent.tasks import PersistentTaskManager
 from anuris.agent.todo import TodoManager
-from anuris.services import MCPManager, PermissionManager, PluginManager, SessionCatalog, SettingsManager, WorktreeManager
+from anuris.services import (
+    ContextFileTracker,
+    HookManager,
+    MCPManager,
+    PermissionManager,
+    PluginManager,
+    SessionCatalog,
+    SettingsManager,
+    UsageTracker,
+    WorktreeManager,
+)
 from anuris.tools import ToolRegistry, build_default_tools
 
 
@@ -54,6 +64,9 @@ class QueryEngineTests(unittest.TestCase):
             plugin_manager=PluginManager(self.workspace),
             mcp_manager=MCPManager(self.workspace),
             settings_manager=SettingsManager(),
+            hook_manager=HookManager(self.workspace),
+            context_files=ContextFileTracker(self.workspace),
+            usage_tracker=UsageTracker(),
         )
         self.tool_registry = ToolRegistry(build_default_tools())
         self.config = Config(api_key="k", model="fake-model", base_url="https://example.com/v1")

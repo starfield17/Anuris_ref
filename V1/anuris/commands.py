@@ -5,10 +5,11 @@ import os
 import shlex
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from rich.panel import Panel
+
+from .command_specs import register_analysis_commands, register_event_commands
 
 
 @dataclass
@@ -57,6 +58,8 @@ class CommandDispatcher:
         self._register("output-style", "Show or set the output style.", "/output-style [plain|rich]", self._handle_output_style)
         self._register("theme", "Show or set the current theme name.", "/theme [name]", self._handle_theme)
         self._register("vim", "Enable or disable vim mode flag.", "/vim [on|off|status]", self._handle_vim)
+        register_analysis_commands(self)
+        register_event_commands(self)
 
         if extra_handlers:
             for name, handler in extra_handlers.items():
@@ -147,10 +150,12 @@ class CommandDispatcher:
     def _handle_files(self, args: str) -> None:
         del args
         attachments = self.session.attachment_manager.list_attachments()
+        context_files = self.session.services.context_files.render()
         if attachments:
             self.ui.display_attachments(attachments)
         else:
             self.ui.display_message("No pending attachments.", style="yellow")
+        self.ui.display_message(context_files, style="cyan")
 
     def _handle_agent(self, args: str) -> None:
         action = (args.strip().lower() or "status")

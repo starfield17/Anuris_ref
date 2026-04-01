@@ -40,6 +40,9 @@ class SessionServices:
     plugin_manager: Any
     mcp_manager: Any
     settings_manager: Any
+    hook_manager: Any
+    context_files: Any
+    usage_tracker: Any
 
 
 @dataclass

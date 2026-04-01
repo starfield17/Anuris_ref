@@ -8,8 +8,9 @@ from anuris.session import ChatSession
 
 
 class FakeModel:
-    def __init__(self):
+    def __init__(self, responses=None):
         self.calls = []
+        self.responses = list(responses or [])
 
     def create_completion(self, messages, stream, tools=None, tool_choice=None):
         self.calls.append(
@@ -20,6 +21,8 @@ class FakeModel:
                 "tool_choice": tool_choice,
             }
         )
+        if self.responses:
+            return self.responses.pop(0)
         return {"choices": [{"message": {"content": "unused"}}]}
 
 
@@ -129,3 +132,37 @@ class CommandDispatcherTests(unittest.TestCase):
         response = self.session.handle_input("/worktree exit")
         self.assertIn(str(self.workspace), response.output_text)
         self.assertEqual(self.session.workspace_root, self.workspace.resolve())
+
+    def test_files_and_cost_commands_show_context(self):
+        self.session.handle_input("Read note", attachment_paths=[str(self.workspace / "note.txt")])
+        response = self.session.handle_input("/files")
+        self.assertIn("note.txt", response.output_text)
+
+        response = self.session.handle_input("/cost")
+        self.assertIn("queries:", response.output_text)
+
+    def test_hooks_command_adds_and_runs_local_hook(self):
+        response = self.session.handle_input('/hooks add tool_called "printf hook-fired"')
+        self.assertIn("Added hook", response.output_text)
+
+        response = self.session.handle_input("/hooks run tool_called")
+        self.assertIn("hook-fired", response.output_text)
+
+    def test_review_and_plan_commands_use_prompt_execution(self):
+        review_session = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel(
+                [
+                    {"choices": [{"message": {"content": "Review findings go here."}}]},
+                    {"choices": [{"message": {"content": "Implementation plan drafted."}}]},
+                ]
+            ),
+            workspace_root=self.workspace,
+            session_id="cmdreview",
+        )
+
+        review_response = review_session.handle_input("/review")
+        self.assertIn("Review findings go here.", review_response.output_text)
+
+        plan_response = review_session.handle_input("/plan add MCP support")
+        self.assertIn("Implementation plan drafted.", plan_response.output_text)

@@ -104,6 +104,7 @@ class ReadFileTool(BaseTool):
 
     def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
         path = _resolve_workspace_path(context.workspace_root, str(args.get("path", "")))
+        context.services.context_files.record(path)
         text = path.read_text(encoding="utf-8")
         start_line = int(args.get("start_line", 1))
         end_line = int(args.get("end_line", 0))
@@ -139,6 +140,7 @@ class WriteFileTool(BaseTool):
         path.parent.mkdir(parents=True, exist_ok=True)
         content = str(args.get("content", ""))
         path.write_text(content, encoding="utf-8")
+        context.services.context_files.record(path)
         return ToolExecutionResult(
             model_content=f"Wrote {len(content)} characters to {path.relative_to(context.workspace_root)}",
             summary=f"write_file {path.relative_to(context.workspace_root)}",
@@ -170,6 +172,7 @@ class EditFileTool(BaseTool):
             raise ValueError("old_text was not found in the target file")
         updated = content.replace(old_text, new_text, 1)
         path.write_text(updated, encoding="utf-8")
+        context.services.context_files.record(path)
         return ToolExecutionResult(
             model_content=f"Edited {path.relative_to(context.workspace_root)}",
             summary=f"edit_file {path.relative_to(context.workspace_root)}",
@@ -194,6 +197,8 @@ class GlobTool(BaseTool):
         if not pattern:
             raise ValueError("pattern is required")
         matches = sorted(context.workspace_root.glob(pattern))
+        for path in matches[:50]:
+            context.services.context_files.record(path)
         rendered = "\n".join(str(path.relative_to(context.workspace_root)) for path in matches[:200]) or "(no matches)"
         return ToolExecutionResult(
             model_content=rendered,
@@ -241,6 +246,7 @@ class GrepTool(BaseTool):
                 except Exception:
                     continue
             output = "\n".join(matches[:200]) or "(no matches)"
+        context.services.context_files.record(search_root)
         return ToolExecutionResult(
             model_content=output,
             summary=f"grep {pattern}",
@@ -432,6 +438,10 @@ class ReadMcpResourceTool(BaseTool):
 
     def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
         content = context.services.mcp_manager.read_resource(str(args.get("name", "")), args.get("server"))
+        for resource in context.services.mcp_manager.list_resources(args.get("server")):
+            if resource.get("name") == str(args.get("name", "")):
+                context.services.context_files.record(resource.get("path", ""))
+                break
         return ToolExecutionResult(model_content=content, summary=f"read_mcp_resource {args.get('name', '')}")
 
 
