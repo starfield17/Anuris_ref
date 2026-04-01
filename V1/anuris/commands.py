@@ -11,9 +11,12 @@ from rich.panel import Panel
 
 from .command_specs import (
     register_analysis_commands,
+    register_diagnostic_commands,
     register_event_commands,
     register_inspection_commands,
     register_session_ops_commands,
+    register_workspace_commands,
+    register_workflow_commands,
 )
 
 
@@ -24,6 +27,7 @@ class CommandSpec:
     usage: str
     handler: Callable[[str], None]
     aliases: tuple[str, ...] = ()
+    group: str = "General"
 
 
 class CommandDispatcher:
@@ -35,23 +39,23 @@ class CommandDispatcher:
         self.commands: Dict[str, CommandSpec] = {}
 
         self._register("help", "Show available commands.", "/help", self._handle_help)
-        self._register("clear", "Clear conversation state and pending attachments.", "/clear", self._handle_clear)
+        self._register("clear", "Clear session, context, memory, or attachments.", "/clear [all|session|context|attachments|memory]", self._handle_clear)
         self._register("save", "Save the current session transcript as JSON.", "/save [filename]", self._handle_save)
         self._register("load", "Load a saved JSON session.", "/load [filename]", self._handle_load)
         self._register("attach", "Queue local files as message attachments.", "/attach <glob...>", self._handle_attach)
         self._register("detach", "Remove one or all pending attachments.", "/detach [index]", self._handle_detach)
-        self._register("files", "List pending attachments.", "/files", self._handle_files)
+        self._register("files", "List attachments and current working set.", "/files", self._handle_files)
         self._register("agent", "Enable, disable, or inspect tool mode.", "/agent [on|off|status]", self._handle_agent)
         self._register("compact", "Compact older context into a summary boundary.", "/compact [focus]", self._handle_compact)
         self._register("todos", "Render the in-memory todo board.", "/todos", self._handle_todos)
         self._register("tasks", "Render the persistent task board.", "/tasks", self._handle_tasks)
         self._register("skills", "Render discovered skill files.", "/skills", self._handle_skills)
-        self._register("status", "Show session status and active capabilities.", "/status", self._handle_status)
-        self._register("model", "Show or update the active model name.", "/model [name]", self._handle_model)
+        self._register("status", "Show session, git, context, and runtime status.", "/status", self._handle_status)
+        self._register("model", "Show, pick, or update the active model.", "/model [name|pick]", self._handle_model)
         self._register("config", "Show the current runtime config.", "/config", self._handle_config)
         self._register("agents", "Show subagent capability status.", "/agents", self._handle_agents)
         self._register("permissions", "Show or update the active permission mode.", "/permissions [mode]", self._handle_permissions)
-        self._register("session", "Inspect current session or list saved sessions.", "/session [show|list]", self._handle_session)
+        self._register("session", "Inspect, preview, list, or pick saved sessions.", "/session [show|list|preview|pick]", self._handle_session)
         self._register("resume", "Resume a stored session by id or latest.", "/resume [session_id]", self._handle_resume)
         self._register("rewind", "Rewind one or more recent conversation turns.", "/rewind [turns]", self._handle_rewind)
         self._register("mcp", "Inspect or modify local MCP resources.", "/mcp <servers|list|add-resource|read>", self._handle_mcp)
@@ -60,13 +64,16 @@ class CommandDispatcher:
         self._register("worktree", "Inspect or switch worktrees.", "/worktree <list|enter|exit>", self._handle_worktree)
         self._register("branch", "Show the current git branch.", "/branch", self._handle_branch)
         self._register("env", "Show environment and runtime details.", "/env", self._handle_env)
-        self._register("output-style", "Show or set the output style.", "/output-style [plain|rich]", self._handle_output_style)
-        self._register("theme", "Show or set the current theme name.", "/theme [name]", self._handle_theme)
+        self._register("output-style", "Show, pick, or set the output style.", "/output-style [plain|rich|pick]", self._handle_output_style)
+        self._register("theme", "Show, pick, toggle, or set the theme.", "/theme [name|pick|toggle|switch]", self._handle_theme)
         self._register("vim", "Enable or disable vim mode flag.", "/vim [on|off|status]", self._handle_vim)
         register_analysis_commands(self)
+        register_diagnostic_commands(self)
         register_event_commands(self)
         register_inspection_commands(self)
         register_session_ops_commands(self)
+        register_workspace_commands(self)
+        register_workflow_commands(self)
 
         if extra_handlers:
             for name, handler in extra_handlers.items():
@@ -79,8 +86,16 @@ class CommandDispatcher:
         usage: str,
         handler: Callable[[str], None],
         aliases: tuple[str, ...] = (),
+        group: str = "",
     ) -> None:
-        spec = CommandSpec(name=name, description=description, usage=usage, handler=handler, aliases=aliases)
+        spec = CommandSpec(
+            name=name,
+            description=description,
+            usage=usage,
+            handler=handler,
+            aliases=aliases,
+            group=group or self._infer_group(name),
+        )
         self.commands[name] = spec
         for alias in aliases:
             self.commands[alias] = spec
@@ -93,24 +108,66 @@ class CommandDispatcher:
         return True
 
     def _handle_help(self, args: str) -> None:
-        del args
-        lines = ["[bold cyan]Anuris Command Palette[/bold cyan]", ""]
+        query = args.strip().lower()
+        grouped: Dict[str, List[CommandSpec]] = {}
         seen: set[str] = set()
         for key in sorted(self.commands):
             spec = self.commands[key]
             if spec.name in seen:
                 continue
             seen.add(spec.name)
-            alias_text = f" (aliases: {', '.join(spec.aliases)})" if spec.aliases else ""
-            lines.append(f"[green]{spec.usage}[/green]{alias_text}")
-            lines.append(f"    {spec.description}")
-        self.ui.display_message(Panel.fit("\n".join(lines), border_style="blue"))
+            haystack = f"{spec.name} {spec.description} {spec.usage} {spec.group}".lower()
+            if query and query not in haystack:
+                continue
+            grouped.setdefault(spec.group, []).append(spec)
+
+        if not grouped:
+            self.ui.display_message(f"No commands matched: {query}", style="yellow")
+            return
+
+        lines = ["[bold cyan]Anuris Command Palette[/bold cyan]", ""]
+        ordered_groups = ["Core", "Context", "Session", "Diagnostics", "Git", "Runtime", "Tools", "Automation"]
+        seen_groups: set[str] = set()
+        for group in ordered_groups + sorted(grouped):
+            if group in seen_groups:
+                continue
+            seen_groups.add(group)
+            specs = grouped.get(group)
+            if not specs:
+                continue
+            lines.append(f"[bold magenta]{group}[/bold magenta]")
+            for spec in specs:
+                alias_text = f" (aliases: {', '.join(spec.aliases)})" if spec.aliases else ""
+                lines.append(f"[green]{spec.usage}[/green]{alias_text}")
+                lines.append(f"    {spec.description}")
+            lines.append("")
+        self.ui.display_message(Panel.fit("\n".join(lines).rstrip(), border_style="blue"))
 
     def _handle_clear(self, args: str) -> None:
-        del args
-        self.session.session_store.reset()
-        self.session.attachment_manager.clear_attachments()
-        self.ui.display_message("Session state cleared.", style="yellow")
+        action = (args.strip().lower() or "all")
+        if action == "all":
+            self.session.session_store.reset()
+            self.session.attachment_manager.clear_attachments()
+            self.session.services.context_files.clear_all()
+            self.ui.display_message("Session, attachments, and context cleared.", style="yellow")
+            return
+        if action == "session":
+            self.session.session_store.reset()
+            self.ui.display_message("Session history cleared.", style="yellow")
+            return
+        if action == "attachments":
+            self.session.attachment_manager.clear_attachments()
+            self.ui.display_message("Pending attachments cleared.", style="yellow")
+            return
+        if action == "context":
+            self.session.services.context_files.clear_all()
+            self.ui.display_message("Context files and added directories cleared.", style="yellow")
+            return
+        if action == "memory":
+            self.session.services.memory_manager.clear()
+            self.ui.display_message("Workspace memory cleared.", style="yellow")
+            return
+        self.ui.display_message("Usage: /clear [all|session|context|attachments|memory]", style="yellow")
 
     def _handle_save(self, args: str) -> None:
         filename = args.strip() or "anuris_session.json"
@@ -196,12 +253,20 @@ class CommandDispatcher:
     def _handle_status(self, args: str) -> None:
         del args
         active_tools = ", ".join(sorted(self.session.tool_registry.by_name))
+        git_summary = self._git_summary()
+        context_snapshot = self.session.services.context_files.snapshot()
         lines = [
+            f"Session: {self.session.session_store.title or self.session.session_id}",
             f"Model: {self.session.config.model}",
             f"Base URL: {self.session.config.base_url}",
             f"Workspace: {self.session.workspace_root}",
             f"Tool mode: {'on' if self.session.agent_mode else 'off'}",
             f"Permission mode: {self.session.services.permission_manager.mode}",
+            f"Theme: {self.session.services.settings_manager.runtime.theme}",
+            f"Output style: {self.session.services.settings_manager.runtime.output_style}",
+            f"Git: {git_summary}",
+            f"Context files: {context_snapshot['files']}",
+            f"Added dirs: {context_snapshot['added_dirs']}",
             f"Tools: {active_tools}",
         ]
         self.ui.display_message(Panel.fit("\n".join(lines), border_style="cyan"))
@@ -211,6 +276,12 @@ class CommandDispatcher:
         if not requested:
             self.ui.display_message(f"Current model: {self.session.config.model}", style="cyan")
             return
+        if requested == "pick":
+            choice = self._choose_option("model", self._model_options(), default=self.session.config.model)
+            if not choice:
+                self.ui.display_message("Available models: " + ", ".join(self._model_options()), style="cyan")
+                return
+            requested = choice
         self.session.config.model = requested
         if hasattr(self.session.model, "config"):
             self.session.model.config.model = requested
@@ -240,14 +311,36 @@ class CommandDispatcher:
         self.ui.display_message(f"Permission mode set to {mode}", style="green")
 
     def _handle_session(self, args: str) -> None:
-        action = (args.strip().lower() or "show")
+        parts = shlex.split(args)
+        action = (parts[0].lower() if parts else "show")
         if action == "show":
-            self.ui.display_message(Panel.fit(self.session.session_store.describe(), border_style="cyan"))
+            details = [
+                self.session.session_store.describe(),
+                "",
+                self.session.session_store.summary_report(limit=5),
+            ]
+            self.ui.display_message(Panel.fit("\n".join(details), border_style="cyan"))
             return
         if action == "list":
             self.ui.display_message(self.session.services.session_catalog.render(), style="cyan")
             return
-        self.ui.display_message("Usage: /session [show|list]", style="yellow")
+        if action == "preview":
+            session_id = parts[1] if len(parts) > 1 else self.session.services.session_catalog.latest_session_id()
+            self.ui.display_message(self.session.services.session_catalog.preview(session_id), style="cyan")
+            return
+        if action == "pick":
+            sessions = self.session.services.session_catalog.list_sessions()
+            options = [f"{item['session_id']} [{item['title'] or 'untitled'}]" for item in sessions]
+            choice = self._choose_option("session", options)
+            if not choice:
+                self.ui.display_message("Available sessions:\n" + self.session.services.session_catalog.render(), style="cyan")
+                return
+            session_id = choice.split(" ", 1)[0]
+            snapshot = self.session.services.session_catalog.snapshot_path(session_id)
+            self.session.session_store.load_snapshot_path(snapshot)
+            self.ui.display_message(f"Resumed session {session_id}", style="green")
+            return
+        self.ui.display_message("Usage: /session [show|list|preview|pick]", style="yellow")
 
     def _handle_resume(self, args: str) -> None:
         session_id = args.strip() or self.session.services.session_catalog.latest_session_id()
@@ -354,6 +447,12 @@ class CommandDispatcher:
                 style="cyan",
             )
             return
+        if requested == "pick":
+            choice = self._choose_option("output style", ["rich", "plain"], default=self.session.services.settings_manager.runtime.output_style)
+            if not choice:
+                self.ui.display_message("Available output styles: rich, plain", style="cyan")
+                return
+            requested = choice
         style = self.session.services.settings_manager.set_output_style(requested)
         self.ui.display_message(f"Output style set to {style}", style="green")
 
@@ -364,6 +463,17 @@ class CommandDispatcher:
             current = self.session.services.settings_manager.runtime.theme
             self.ui.display_message(f"theme: {current} (available: {available})", style="cyan")
             return
+        if requested.lower() == "pick":
+            choice = self._choose_option(
+                "theme",
+                list(self.session.services.settings_manager.available_themes()),
+                default=self.session.services.settings_manager.runtime.theme,
+            )
+            if not choice:
+                available = ", ".join(self.session.services.settings_manager.available_themes())
+                self.ui.display_message(f"Available themes: {available}", style="cyan")
+                return
+            requested = choice
         if requested.lower() in {"toggle", "switch"}:
             theme = self.session.services.settings_manager.toggle_theme()
             self.ui.display_message(f"Theme switched to {theme}", style="green")
@@ -394,3 +504,102 @@ class CommandDispatcher:
             self.session.workspace_root,
             skills_dirs=skill_dirs,
         )
+
+    def _choose_option(self, title: str, options: List[str], default: str = "") -> str:
+        if hasattr(self.ui, "select_option"):
+            try:
+                default_index = options.index(default) if default in options else 0
+            except ValueError:
+                default_index = 0
+            selected = self.ui.select_option(title, options, default_index=default_index)
+            return selected or ""
+        return ""
+
+    def _model_options(self) -> List[str]:
+        options = [
+            self.session.config.model,
+            "gpt-4.1",
+            "gpt-4o",
+            "claude-sonnet-4-5",
+            "deepseek-chat",
+        ]
+        seen: set[str] = set()
+        result: List[str] = []
+        for item in options:
+            if item and item not in seen:
+                seen.add(item)
+                result.append(item)
+        return result
+
+    def _git_summary(self) -> str:
+        try:
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=self.session.workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            ).stdout.strip()
+            dirty = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=self.session.workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            ).stdout.splitlines()
+        except Exception:
+            return "not a git repository"
+        return f"{branch} ({len(dirty)} change(s))"
+
+    @staticmethod
+    def _infer_group(name: str) -> str:
+        groups = {
+            "help": "Core",
+            "clear": "Core",
+            "save": "Session",
+            "load": "Session",
+            "attach": "Context",
+            "detach": "Context",
+            "files": "Context",
+            "add-dir": "Context",
+            "agent": "Runtime",
+            "compact": "Session",
+            "todos": "Automation",
+            "tasks": "Automation",
+            "skills": "Automation",
+            "status": "Runtime",
+            "model": "Runtime",
+            "config": "Runtime",
+            "agents": "Automation",
+            "permissions": "Runtime",
+            "session": "Session",
+            "resume": "Session",
+            "rewind": "Session",
+            "mcp": "Tools",
+            "plugin": "Tools",
+            "reload-plugins": "Tools",
+            "worktree": "Tools",
+            "branch": "Git",
+            "env": "Runtime",
+            "output-style": "Runtime",
+            "theme": "Runtime",
+            "vim": "Runtime",
+            "cost": "Diagnostics",
+            "usage": "Diagnostics",
+            "stats": "Diagnostics",
+            "doctor": "Diagnostics",
+            "diff": "Git",
+            "review": "Git",
+            "plan": "Git",
+            "hooks": "Automation",
+            "summary": "Session",
+            "context": "Context",
+            "memory": "Context",
+            "rename": "Session",
+            "export": "Session",
+            "copy": "Session",
+            "commit": "Git",
+        }
+        return groups.get(name, "General")

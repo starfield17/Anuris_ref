@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class SessionCatalog:
@@ -63,6 +63,28 @@ class SessionCatalog:
             raise FileNotFoundError(f"Session not found: {session_id}")
         return path
 
+    def preview(self, session_id: str, limit: int = 6) -> str:
+        path = self.snapshot_path(session_id)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        messages = payload.get("messages", [])
+        title = str(payload.get("title", "") or "").strip() or session_id
+        lines = [
+            f"session_id: {session_id}",
+            f"title: {title}",
+            f"messages: {len(messages)}",
+            "recent:",
+        ]
+        for message in messages[-limit:]:
+            role = str(message.get("role", "unknown"))
+            kind = str(message.get("kind", "message"))
+            content = self._preview_text(message.get("content", ""))
+            label = f"{role}:{kind}" if kind != "message" else role
+            lines.append(f"- {label}: {content or '(empty)'}")
+        return "\n".join(lines)
+
+    def choices(self) -> List[str]:
+        return [item["session_id"] for item in self.list_sessions()]
+
     def render(self) -> str:
         sessions = self.list_sessions()
         if not sessions:
@@ -71,3 +93,24 @@ class SessionCatalog:
             f"- {item['session_id']} [{item['title'] or 'untitled'}] ({item['message_count']} messages, updated {item['updated_at']})"
             for item in sessions
         )
+
+    @staticmethod
+    def _preview_text(content: object, max_chars: int = 120) -> str:
+        if isinstance(content, str):
+            text = content.replace("\n", " ").strip()
+        elif isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        parts.append(str(item.get("text", "")))
+                    else:
+                        parts.append(str(item))
+                else:
+                    parts.append(str(item))
+            text = " ".join(part.strip() for part in parts if str(part).strip())
+        else:
+            text = str(content or "").strip()
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."

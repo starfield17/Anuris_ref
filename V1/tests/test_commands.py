@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -85,6 +86,36 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertIn("Theme switched to claude", response.output_text)
         self.assertEqual(self.session.services.settings_manager.runtime.theme, "claude")
 
+    def test_picker_commands_select_theme_model_output_style_and_session(self):
+        self.session.ui.select_option = lambda title, options, default_index=0: "dark" if title == "theme" else options[-1]
+
+        response = self.session.handle_input("/theme pick")
+        self.assertIn("Theme set to dark", response.output_text)
+        self.assertEqual(self.session.services.settings_manager.runtime.theme, "dark")
+
+        response = self.session.handle_input("/model pick")
+        self.assertIn("Updated model", response.output_text)
+        self.assertEqual(self.session.config.model, "deepseek-chat")
+
+        self.session.ui.select_option = lambda title, options, default_index=0: "plain"
+        response = self.session.handle_input("/output-style pick")
+        self.assertIn("Output style set to plain", response.output_text)
+        self.assertEqual(self.session.services.settings_manager.runtime.output_style, "plain")
+
+        other = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="pickme",
+        )
+        other.session_store.add_user_message("picked user")
+        other.session_store.add_assistant_message("picked assistant")
+
+        self.session.ui.select_option = lambda title, options, default_index=0: next(item for item in options if item.startswith("pickme "))
+        response = self.session.handle_input("/session pick")
+        self.assertIn("Resumed session pickme", response.output_text)
+        self.assertTrue(any(message.content == "picked assistant" for message in self.session.session_store.messages))
+
     def test_permissions_and_rewind_commands(self):
         self.session.session_store.add_user_message("first")
         self.session.session_store.add_assistant_message("reply")
@@ -153,6 +184,51 @@ class CommandDispatcherTests(unittest.TestCase):
 
         response = self.session.handle_input("/cost")
         self.assertIn("queries:", response.output_text)
+
+        response = self.session.handle_input("/usage")
+        self.assertIn("elapsed_seconds:", response.output_text)
+
+    def test_doctor_stats_add_dir_and_clear_commands(self):
+        docs_dir = self.workspace / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "guide.md").write_text("guide", encoding="utf-8")
+
+        response = self.session.handle_input(f"/add-dir {docs_dir}")
+        self.assertIn("Added directories:", response.output_text)
+        self.assertEqual(len(self.session.services.context_files.list_dirs()), 1)
+
+        response = self.session.handle_input("/stats")
+        self.assertIn("added_dirs: 1", response.output_text)
+
+        response = self.session.handle_input("/doctor")
+        self.assertIn("Doctor report:", response.output_text)
+        self.assertIn("model_configured: OK", response.output_text)
+
+        self.session.handle_input("/memory append keep this")
+        response = self.session.handle_input("/clear context")
+        self.assertIn("Context files and added directories cleared", response.output_text)
+        self.assertEqual(self.session.services.context_files.snapshot()["added_dirs"], 0)
+
+        response = self.session.handle_input("/clear memory")
+        self.assertIn("Workspace memory cleared", response.output_text)
+
+    def test_help_and_session_preview_commands(self):
+        saved = ChatSession(
+            Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="preview1",
+        )
+        saved.session_store.add_user_message("preview user")
+        saved.session_store.add_assistant_message("preview assistant")
+
+        response = self.session.handle_input("/help context")
+        self.assertIn("Context", response.output_text)
+        self.assertIn("/add-dir", response.output_text)
+
+        response = self.session.handle_input("/session preview preview1")
+        self.assertIn("preview assistant", response.output_text)
+        self.assertIn("session_id: preview1", response.output_text)
 
     def test_hooks_command_adds_and_runs_local_hook(self):
         response = self.session.handle_input('/hooks add tool_called "printf hook-fired"')
@@ -238,3 +314,21 @@ class CommandDispatcherTests(unittest.TestCase):
         code_path = Path(tempfile.gettempdir()) / "anuris" / "copy.py"
         self.assertTrue(code_path.exists())
         self.assertEqual(code_path.read_text(encoding="utf-8"), "print('hello')\n")
+
+    def test_commit_command_creates_git_commit(self):
+        subprocess.run(["git", "init"], cwd=self.workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.workspace, check=True, capture_output=True, text=True)
+
+        (self.workspace / "note.txt").write_text("updated", encoding="utf-8")
+        response = self.session.handle_input("/commit test workspace snapshot")
+        self.assertIn("test workspace snapshot", response.output_text)
+
+        log = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("test workspace snapshot", log)

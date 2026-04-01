@@ -211,6 +211,36 @@ class ChatUI:
             line.append(text, style=style)
         self.console.print(line)
 
+    def select_option(self, title: str, options: List[str], default_index: int = 0) -> Optional[str]:
+        if not options:
+            return None
+        if self._is_plain_output():
+            return None
+        palette = self._palette()
+        self.console.print(
+            Panel.fit(
+                "\n".join(f"{index + 1}. {option}" for index, option in enumerate(options)),
+                title=Text(title, style=palette.accent_soft),
+                border_style=palette.border,
+                box=box.ROUNDED,
+            )
+        )
+        default_choice = str(default_index + 1 if 0 <= default_index < len(options) else 1)
+        try:
+            raw = self.session.prompt("Select option number (blank to cancel): ", default="")
+        except (EOFError, KeyboardInterrupt):
+            return None
+        value = raw.strip() or default_choice
+        if not raw.strip():
+            return None
+        try:
+            selected_index = int(value) - 1
+        except ValueError:
+            return None
+        if 0 <= selected_index < len(options):
+            return options[selected_index]
+        return None
+
     def display_separator(self) -> None:
         if self._is_plain_output():
             self.console.print("-" * 72)
@@ -325,9 +355,10 @@ class ChatUI:
             Text("Claude Code-inspired Python runtime", style=palette.muted),
             Text(""),
             Text("Quick start", style=f"bold {palette.accent_soft}"),
-            Text("• /help  /status  /context  /summary  /memory", style=palette.assistant),
-            Text("• /review  /plan  /rename  /export  /copy", style=palette.assistant),
-            Text("• /permissions  /worktree  /mcp  /plugin", style=palette.assistant),
+            Text("• /help  /status  /doctor  /usage  /stats", style=palette.assistant),
+            Text("• /context  /summary  /memory  /add-dir  /files", style=palette.assistant),
+            Text("• /review  /plan  /commit  /rename  /export  /copy", style=palette.assistant),
+            Text("• /permissions  /worktree  /mcp  /plugin  /session", style=palette.assistant),
             Text(""),
             Text("Shortcuts", style=f"bold {palette.accent_soft}"),
             Text("• Enter send  • Ctrl+D send  • Ctrl+V paste  • Ctrl+Z undo  • Ctrl+Y redo", style=palette.muted),

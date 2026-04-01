@@ -101,6 +101,10 @@ class HeadlessUI:
         if content.strip():
             self.display_message(content)
 
+    def select_option(self, title: str, options: List[str], default_index: int = 0) -> Optional[str]:
+        del title, options, default_index
+        return None
+
     @staticmethod
     def _render(content: Any) -> str:
         if isinstance(content, str):

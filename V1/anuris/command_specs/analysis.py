@@ -64,7 +64,13 @@ Review priorities:
 - security or data-loss risk
 - interface or behavior changes
 
-If there are no findings, say so explicitly and mention residual risk.
+Return sections in this order:
+1. Summary
+2. Findings
+3. Recommended fixes
+4. Residual risk
+
+If there are no findings, say so explicitly under Findings and mention residual risk.
 
 Diff:
 ```diff
@@ -91,7 +97,14 @@ Produce a concrete implementation plan for this task in the current repository.
 Task:
 {raw}
 
-The plan should focus on:
+Return sections in this order:
+1. Goal
+2. Code changes
+3. Interface impact
+4. Tests
+5. Risks
+
+The plan should be specific to this repository and focus on:
 - major code changes
 - key interfaces
 - tests to add or update
