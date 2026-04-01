@@ -17,6 +17,11 @@ permission contexts.
 - **Command Palette**
   Slash commands are now registry-backed instead of hardcoded branching logic.
 
+- **Claude-style Terminal UI**
+  Interactive mode now uses a Claude Code-inspired welcome card, status line,
+  assistant panels, and activity/event rendering, with `claude` as the default
+  runtime theme.
+
 - **Session Persistence**
   Sessions can be saved, loaded, compacted, and replayed from written
   transcripts under `.anuris/sessions/`.

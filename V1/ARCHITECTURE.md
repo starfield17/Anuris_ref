@@ -93,6 +93,9 @@ V1/
   - debug server switch
 - `anuris/state_machine.py`
   - interactive prompt loop only
+- `anuris/ui.py`
+  - Claude Code-inspired terminal presentation layer
+  - status line + welcome card + assistant/reasoning/activity renderers
 
 ### Session / Engine Core
 

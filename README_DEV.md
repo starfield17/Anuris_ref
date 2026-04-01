@@ -128,6 +128,13 @@ Current slash commands:
 - `/export [filename]`
 - `/copy [full|code [index]|message [index]]`
 
+### Interactive UI
+
+- `V1/anuris/ui.py` now renders a Claude Code-inspired terminal shell
+- Default runtime theme is `claude`
+- Interactive rendering distinguishes welcome/status, assistant replies,
+  reasoning panels, and tool/activity lines
+
 New grouped command registrations live under `V1/anuris/command_specs/`:
 
 - `analysis.py` for `/cost`, `/diff`, `/review`, `/plan`
