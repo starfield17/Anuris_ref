@@ -209,3 +209,19 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertIn("Session:", exported)
         self.assertIn("Refactor the runtime session layer", exported)
         self.assertIn("Starting with command and session metadata changes.", exported)
+
+    def test_copy_command_writes_fallback_artifacts(self):
+        self.session.session_store.add_assistant_message("Plain answer for copy testing.")
+        self.session.session_store.add_assistant_message("```python\nprint('hello')\n```")
+
+        response = self.session.handle_input("/copy message 1")
+        self.assertTrue("response.md" in response.output_text)
+        response_path = Path(tempfile.gettempdir()) / "anuris" / "response.md"
+        self.assertTrue(response_path.exists())
+        self.assertIn("print('hello')", response_path.read_text(encoding="utf-8"))
+
+        response = self.session.handle_input("/copy code 1")
+        self.assertTrue("copy.py" in response.output_text)
+        code_path = Path(tempfile.gettempdir()) / "anuris" / "copy.py"
+        self.assertTrue(code_path.exists())
+        self.assertEqual(code_path.read_text(encoding="utf-8"), "print('hello')\n")
