@@ -116,6 +116,16 @@ Current slash commands:
 - `/output-style [plain|rich]`
 - `/theme [name]`
 - `/vim [on|off|status]`
+- `/cost`
+- `/diff [full|pathspec]`
+- `/review [pr_number]`
+- `/plan [open|show|description]`
+- `/hooks [list|add|remove|run]`
+
+New grouped command registrations live under `V1/anuris/command_specs/`:
+
+- `analysis.py` for `/cost`, `/diff`, `/review`, `/plan`
+- `events.py` for `/hooks`
 
 ## 4) Test Commands
 
@@ -139,3 +149,5 @@ python -m py_compile anuris/session.py anuris/commands.py anuris/state_machine.p
   engine yet.
 - The refactor prioritized a clean QueryEngine/tool architecture first, leaving
   richer coordination features for a later phase.
+- Usage/cost reporting is local session accounting only; provider billing and
+  token pricing are not yet wired.

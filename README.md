@@ -111,6 +111,11 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 * `/output-style [plain|rich]`
 * `/theme [name]`
 * `/vim [on|off|status]`
+* `/cost`
+* `/diff [full|pathspec]`
+* `/review [pr_number]`
+* `/plan [open|show|description]`
+* `/hooks [list|add|remove|run]`
 
 ### Keyboard Shortcuts
 

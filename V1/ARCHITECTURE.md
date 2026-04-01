@@ -51,6 +51,7 @@ V1/
     model.py
     session.py           # ChatSession + HeadlessUI + SessionResponse
     commands.py          # registry-backed slash command layer
+    command_specs/       # grouped command registrations for expanding surface
     state_machine.py     # thin TTY shell
     ui.py                # terminal UI / prompt-toolkit bindings
     engine/
@@ -65,6 +66,9 @@ V1/
       plugins.py         # local plugin discovery
       mcp.py             # local MCP resource catalog
       settings.py        # runtime UI/output settings
+      hooks.py           # local hook runner / registry
+      context_files.py   # files currently in session context
+      usage.py           # local usage accounting for /cost
     tools/
       base.py            # BaseTool + ToolExecutionResult
       builtin.py         # bash/read/write/edit/glob/grep/task/skill/MCP/worktree tools
@@ -120,6 +124,9 @@ V1/
   - registry-backed slash commands
   - help, save/load, attach/detach, compact, status, model, tasks, skills
   - permissions, session resume/rewind, MCP, plugins, worktrees, branch/env/output settings
+- `anuris/command_specs/`
+  - grouped command registrations for newer command families
+  - currently covers analysis-style commands and event/hook commands
 
 ## 5. Current Command Surface
 
@@ -154,6 +161,11 @@ Interactive commands:
 - `/output-style [plain|rich]`
 - `/theme [name]`
 - `/vim [on|off|status]`
+- `/cost`
+- `/diff [full|pathspec]`
+- `/review [pr_number]`
+- `/plan [open|show|description]`
+- `/hooks [list|add|remove|run]`
 
 ## 6. Built-in Tools
 
@@ -190,6 +202,7 @@ Focused tests now cover:
 - compaction behavior
 - provider wrapper behavior
 - headless session and debug server flows
+- hooks, prompt-backed review/plan commands, and local usage tracking
 
 Run the suite with:
 
@@ -206,3 +219,5 @@ python -m unittest discover -s tests -v
   full interactive approval system.
 - Legacy background/team governance features were not carried into the new
   runtime yet; the refactor centers on the single-session engine first.
+- `/review` and `/plan` currently run through local prompt execution on the
+  shared QueryEngine instead of a dedicated prompt-command runtime.
