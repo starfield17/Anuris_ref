@@ -30,7 +30,8 @@ permission contexts.
   Attach images, documents, or text files to enrich requests.
 
 - **Provider-aware Config**
-  Configure API key, model, base URL, proxy, temperature, and reasoning mode.
+  Configure API key, model, base URL, proxy, temperature, reasoning mode,
+  output style, theme, and vim mode.
 
 ## Installation
 
@@ -148,7 +149,26 @@ Debug artifacts are stored under `V1/.anuris_debug/sessions/`.
 ## Configuration
 
 Configuration is stored in `~/.anuris_config.toml`.
-Run with `--save-config` to persist current options.
+Run with `--save-config` to persist current CLI options.
+
+Persisted fields now include:
+
+- `api_key`
+- `model`
+- `proxy`
+- `base_url`
+- `temperature`
+- `reasoning`
+- `system_prompt`
+- `output_style`
+- `theme`
+- `vim_mode`
+
+Interactive runtime commands also persist UI settings immediately:
+
+- `/theme`
+- `/output-style`
+- `/vim`
 
 ## Tests
 

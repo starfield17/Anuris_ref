@@ -88,6 +88,7 @@ V1/
   - CLI argument parser
   - saved config merge
   - prompting for missing required settings
+  - persisted UI settings (`theme`, `output_style`, `vim_mode`)
 - `anuris/cli.py`
   - startup wiring
   - debug server switch
@@ -96,6 +97,7 @@ V1/
 - `anuris/ui.py`
   - Claude Code-inspired terminal presentation layer
   - status line + welcome card + assistant/reasoning/activity renderers
+  - lightweight option picker for interactive commands
 
 ### Session / Engine Core
 
@@ -236,3 +238,5 @@ python -m unittest discover -s tests -v
   runtime yet; the refactor centers on the single-session engine first.
 - `/review` and `/plan` currently run through local prompt execution on the
   shared QueryEngine instead of a dedicated prompt-command runtime.
+- Runtime UI setting persistence currently focuses on `theme`,
+  `output_style`, and `vim_mode`, not every ephemeral session flag.

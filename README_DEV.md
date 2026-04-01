@@ -38,6 +38,12 @@ Optional config persistence:
 python Anuris_rebuild.py --base-url <URL> --model <MODEL> --api-key <KEY> --save-config
 ```
 
+Additional CLI overrides now exist for persisted UI settings:
+
+```bash
+python Anuris_rebuild.py --theme dark --output-style plain --vim-mode on
+```
+
 Headless debug server:
 
 ```bash
@@ -141,6 +147,7 @@ Current slash commands:
 - `/theme toggle` and `/theme switch` alternate between `claude` and `dark`
 - Interactive rendering distinguishes welcome/status, assistant replies,
   reasoning panels, and tool/activity lines
+- `/theme`, `/output-style`, and `/vim` now persist to `~/.anuris_config.toml`
 
 New grouped command registrations live under `V1/anuris/command_specs/`:
 
