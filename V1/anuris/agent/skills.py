@@ -1,7 +1,8 @@
 import difflib
+import fnmatch
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set
 
 
 class SkillLoader:
@@ -38,6 +39,13 @@ class SkillLoader:
                     "description": meta.get("description", "No description"),
                     "tags": meta.get("tags", ""),
                     "path": str(skill_file),
+                    "paths": meta.get("paths", ""),
+                    "allowed_tools": meta.get("allowed_tools", ""),
+                    "agent": meta.get("agent", ""),
+                    "effort": meta.get("effort", ""),
+                    "when_to_use": meta.get("when_to_use", meta.get("when-to-use", "")),
+                    "user_invocable": meta.get("user_invocable", meta.get("user-invocable", "true")),
+                    "source": meta.get("source", "workspace"),
                 }
                 for alias in self._build_aliases(
                     name=name,
@@ -48,13 +56,14 @@ class SkillLoader:
         self.skills = loaded
         self.alias_map = aliases
 
-    def descriptions(self) -> str:
+    def descriptions(self, current_paths: Optional[Iterable[Path]] = None) -> str:
         """Compact metadata to inject into the system prompt."""
         self.refresh()
-        if not self.skills:
+        visible = self._visible_skill_names(current_paths)
+        if not visible:
             return "(no skills available)"
         lines = []
-        for name in sorted(self.skills):
+        for name in visible:
             skill = self.skills[name]
             line = f"- {name}: {skill['description']}"
             if skill["tags"]:
@@ -83,15 +92,24 @@ class SkillLoader:
         lines = []
         for name in sorted(self.skills):
             skill = self.skills[name]
-            lines.append(f"- {name}: {skill['description']} ({skill['path']})")
+            scope = f" paths={skill['paths']}" if skill.get("paths") else ""
+            lines.append(f"- {name}: {skill['description']} ({skill['path']}){scope}")
         return "\n".join(lines)
 
-    def prefetch(self, prompt: str, limit: int = 3) -> List[Dict[str, str]]:
+    def prefetch(
+        self,
+        prompt: str,
+        limit: int = 3,
+        current_paths: Optional[Iterable[Path]] = None,
+    ) -> List[Dict[str, str]]:
         self.refresh()
         normalized_prompt = self._normalize(prompt)
         raw_tokens = {token for token in re.split(r"[^a-zA-Z0-9_-]+", prompt.lower()) if token}
         scored: List[tuple[int, str]] = []
+        visible = set(self._visible_skill_names(current_paths))
         for name, skill in self.skills.items():
+            if name not in visible:
+                continue
             score = 0
             aliases = {name, self._normalize(name)}
             aliases.update(alias for alias, target in self.alias_map.items() if target == name)
@@ -115,6 +133,7 @@ class SkillLoader:
                     "name": name,
                     "description": skill["description"],
                     "path": skill["path"],
+                    "when_to_use": skill.get("when_to_use", ""),
                 }
             )
         return results
@@ -221,3 +240,33 @@ class SkillLoader:
         if len(parts) < 2:
             return ""
         return "-".join(sorted(parts))
+
+    def _visible_skill_names(self, current_paths: Optional[Iterable[Path]]) -> List[str]:
+        visible: List[str] = []
+        for name in sorted(self.skills):
+            if self._is_in_scope(self.skills[name], current_paths):
+                visible.append(name)
+        return visible
+
+    def _is_in_scope(self, skill: Dict[str, str], current_paths: Optional[Iterable[Path]]) -> bool:
+        patterns = [item.strip() for item in str(skill.get("paths", "") or "").split(",") if item.strip()]
+        if not patterns:
+            return True
+        if not current_paths:
+            return False
+        for path in current_paths:
+            try:
+                relative = path.resolve().relative_to(self.workspace_root)
+            except Exception:
+                continue
+            relative_text = relative.as_posix()
+            if any(
+                fnmatch.fnmatch(relative_text, candidate)
+                for pattern in patterns
+                for candidate in {
+                    pattern.replace("\\", "/"),
+                    pattern.replace("\\", "/").replace("**/", ""),
+                }
+            ):
+                return True
+        return False

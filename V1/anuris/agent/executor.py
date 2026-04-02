@@ -29,6 +29,9 @@ class AgentToolExecutor:
         skill_loader: Optional[SkillLoader] = None,
         background_manager: Optional[BackgroundManager] = None,
         team_manager: Optional[TeamManager] = None,
+        runtime_task_manager: Optional[object] = None,
+        runtime_run_manager: Optional[object] = None,
+        runtime_queue: Optional[object] = None,
     ):
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
         self.todo_manager = todo_manager if include_todo else None
@@ -44,7 +47,12 @@ class AgentToolExecutor:
         if include_skill_loading and self.skill_loader is None:
             self.skill_loader = SkillLoader(self.workspace_root)
         if include_background_tasks and self.background_manager is None:
-            self.background_manager = BackgroundManager(self.workspace_root)
+            self.background_manager = BackgroundManager(
+                self.workspace_root,
+                runtime_task_manager=runtime_task_manager,
+                runtime_run_manager=runtime_run_manager,
+                runtime_queue=runtime_queue,
+            )
         if include_team_ops and self.team_manager is None:
             self.team_manager = TeamManager(self.workspace_root)
         if include_team_ops and self.team_manager and teammate_runner is not None:

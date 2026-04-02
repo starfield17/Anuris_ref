@@ -13,6 +13,9 @@ VALID_MESSAGE_TYPES = {
     "shutdown_response",
     "plan_approval_request",
     "plan_approval_response",
+    "task_assignment",
+    "task_completion",
+    "escalation",
 }
 
 
@@ -36,10 +39,13 @@ class MessageBus:
             return f"Error: Invalid message type '{msg_type}'"
 
         payload: Dict[str, object] = {
+            "message_id": uuid.uuid4().hex[:12],
             "type": msg_type,
             "from": sender,
+            "to": to,
             "content": content,
             "timestamp": time.time(),
+            "read": False,
         }
         if extra:
             payload.update(extra)
@@ -58,8 +64,19 @@ class MessageBus:
 
         with self._lock:
             lines = inbox_path.read_text(encoding="utf-8").splitlines()
-            inbox_path.write_text("", encoding="utf-8")
+            messages = self._parse_messages(lines)
+            unread: List[Dict[str, object]] = []
+            rewritten: List[str] = []
+            for payload in messages:
+                if not bool(payload.get("read")):
+                    unread.append(payload)
+                payload["read"] = True
+                rewritten.append(json.dumps(payload, ensure_ascii=False))
+            inbox_path.write_text("\n".join(rewritten) + ("\n" if rewritten else ""), encoding="utf-8")
+        return unread
 
+    @staticmethod
+    def _parse_messages(lines: List[str]) -> List[Dict[str, object]]:
         messages: List[Dict[str, object]] = []
         for line in lines:
             line = line.strip()
@@ -257,6 +274,24 @@ class TeamManager:
             extra={"request_id": request_id, "plan": plan_text},
         )
         return f"Plan submitted (request_id={request_id})"
+
+    def assign_task(self, to: str, task_id: int, summary: str) -> str:
+        return self.bus.send(
+            "lead",
+            to,
+            summary,
+            msg_type="task_assignment",
+            extra={"task_id": int(task_id)},
+        )
+
+    def record_task_completion(self, sender: str, task_id: int, summary: str) -> str:
+        return self.bus.send(
+            sender,
+            "lead",
+            summary,
+            msg_type="task_completion",
+            extra={"task_id": int(task_id)},
+        )
 
     def review_plan(self, request_id: str, approve: bool, feedback: str = "") -> str:
         with self._lock:

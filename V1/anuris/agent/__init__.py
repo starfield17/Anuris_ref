@@ -1,3 +1,4 @@
+from .autonomy import AutonomousTaskController
 from .background import BackgroundManager
 from .compact import ContextCompactor
 from .loop import AgentLoopRunner, AgentRunResult
@@ -11,6 +12,7 @@ __all__ = [
     "AgentLoopRunner",
     "AgentRunResult",
     "AgentToolExecutor",
+    "AutonomousTaskController",
     "BackgroundManager",
     "ContextCompactor",
     "SessionTeamRuntime",

@@ -17,6 +17,7 @@ class SessionTeamRuntime:
         model: Any,
         workspace_root: Path,
         task_manager: Optional[PersistentTaskManager] = None,
+        runtime_state: Optional[Any] = None,
     ):
         self.model = model
         self.workspace_root = Path(workspace_root).resolve()
@@ -30,6 +31,9 @@ class SessionTeamRuntime:
             include_background_tasks=False,
             include_team_ops=True,
             task_manager=task_manager,
+            runtime_task_manager=getattr(runtime_state, "tasks", None),
+            runtime_run_manager=getattr(runtime_state, "runs", None),
+            runtime_queue=getattr(runtime_state, "queue", None),
         )
         self.runner = AgentLoopRunner(
             model=self.model,

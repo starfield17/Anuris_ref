@@ -1,20 +1,31 @@
 import json
 import threading
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
+
+from ..runtime.events import utc_timestamp
 
 
 class PersistentTaskManager:
     """File-backed task board inspired by learn-claude-code s07."""
 
-    VALID_STATUSES = {"pending", "in_progress", "completed"}
+    VALID_STATUSES = {"pending", "in_progress", "completed", "failed", "cancelled"}
 
     def __init__(self, tasks_dir: Path):
         self.tasks_dir = tasks_dir.resolve()
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
-    def create(self, subject: str, description: str = "") -> str:
+    def create(
+        self,
+        subject: str,
+        description: str = "",
+        *,
+        task_type: str = "agent",
+        workspace_root: str = "",
+        worktree_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
         subject = subject.strip()
         if not subject:
             raise ValueError("subject is required")
@@ -24,10 +35,18 @@ class PersistentTaskManager:
                 "id": self._next_id(),
                 "subject": subject,
                 "description": description.strip(),
+                "task_type": task_type.strip() or "agent",
                 "status": "pending",
                 "owner": "",
                 "blockedBy": [],
                 "blocks": [],
+                "run_id": "",
+                "artifact_dir": "",
+                "workspace_root": workspace_root,
+                "worktree_id": worktree_id or workspace_root,
+                "created_at": utc_timestamp(),
+                "updated_at": utc_timestamp(),
+                "metadata": dict(metadata or {}),
             }
             self._save(task)
         return json.dumps(task, indent=2)
@@ -44,6 +63,9 @@ class PersistentTaskManager:
         add_blocked_by: Optional[List[int]] = None,
         add_blocks: Optional[List[int]] = None,
         owner: Optional[str] = None,
+        run_id: Optional[str] = None,
+        artifact_dir: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         with self._lock:
             task = self._load(task_id)
@@ -61,6 +83,12 @@ class PersistentTaskManager:
 
             if owner is not None:
                 task["owner"] = owner.strip()
+            if run_id is not None:
+                task["run_id"] = run_id.strip()
+            if artifact_dir is not None:
+                task["artifact_dir"] = artifact_dir
+            if metadata:
+                task.setdefault("metadata", {}).update(metadata)
 
             if add_blocked_by:
                 ids = self._normalize_task_ids(add_blocked_by)
@@ -72,6 +100,7 @@ class PersistentTaskManager:
                 for blocked_id in ids:
                     self._add_blocked_by(blocked_id, task_id)
 
+            task["updated_at"] = utc_timestamp()
             self._save(task)
         return json.dumps(task, indent=2)
 
@@ -98,7 +127,7 @@ class PersistentTaskManager:
 
     def list_records(self) -> List[dict]:
         with self._lock:
-            return [json.loads(path.read_text()) for path in self._task_paths()]
+            return [self._normalize_task(json.loads(path.read_text())) for path in self._task_paths()]
 
     def summary_counts(self) -> dict:
         tasks = self.list_records()
@@ -188,6 +217,7 @@ class PersistentTaskManager:
             task = self._load(task_id)
             task["owner"] = owner.strip()
             task["status"] = "in_progress"
+            task["updated_at"] = utc_timestamp()
             self._save(task)
         return json.dumps(task, indent=2)
 
@@ -203,9 +233,20 @@ class PersistentTaskManager:
                     continue
                 task["owner"] = owner.strip()
                 task["status"] = "in_progress"
+                task["updated_at"] = utc_timestamp()
                 self._save(task)
                 return task
         return None
+
+    def attach_run(self, task_id: int, run_id: str, artifact_dir: str = "") -> dict:
+        with self._lock:
+            task = self._load(task_id)
+            task["run_id"] = run_id.strip()
+            if artifact_dir:
+                task["artifact_dir"] = artifact_dir
+            task["updated_at"] = utc_timestamp()
+            self._save(task)
+        return task
 
     def _task_paths(self) -> List[Path]:
         paths = []
@@ -235,9 +276,10 @@ class PersistentTaskManager:
         path = self._task_path(task_id)
         if not path.exists():
             raise ValueError(f"Task {task_id} not found")
-        return json.loads(path.read_text())
+        return self._normalize_task(json.loads(path.read_text()))
 
     def _save(self, task: dict) -> None:
+        task.setdefault("updated_at", utc_timestamp())
         self._task_path(int(task["id"])).write_text(json.dumps(task, indent=2))
 
     @staticmethod
@@ -264,3 +306,16 @@ class PersistentTaskManager:
         if blocker_id not in blocked_by:
             task["blockedBy"] = sorted(blocked_by + [blocker_id])
             self._save(task)
+
+    @staticmethod
+    def _normalize_task(task: dict) -> dict:
+        normalized = dict(task)
+        normalized.setdefault("task_type", "agent")
+        normalized.setdefault("run_id", "")
+        normalized.setdefault("artifact_dir", "")
+        normalized.setdefault("workspace_root", "")
+        normalized.setdefault("worktree_id", normalized.get("workspace_root", ""))
+        normalized.setdefault("created_at", utc_timestamp())
+        normalized.setdefault("updated_at", normalized["created_at"])
+        normalized.setdefault("metadata", {})
+        return normalized
