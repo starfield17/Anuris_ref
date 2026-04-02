@@ -7,6 +7,7 @@ SUPPORTED_THEMES = ("claude", "dark", "midnight", "default")
 SUPPORTED_EFFORT_LEVELS = ("auto", "low", "medium", "high", "max")
 SUPPORTED_SANDBOX_MODES = ("workspace-write", "read-only", "off")
 DEFAULT_STATUSLINE_FORMAT = "model mode perm sandbox cwd session usage team fast effort vim"
+DEFAULT_TURN_POLICY_MODE = "adaptive"
 
 
 @dataclass
@@ -21,6 +22,10 @@ class RuntimeSettings:
     sandbox_mode: str = "workspace-write"
     excluded_commands: list[str] = None
     keybindings_path: str = ""
+    turn_policy_mode: str = DEFAULT_TURN_POLICY_MODE
+    base_turn_limit: int = 24
+    turn_extension_step: int = 12
+    max_turn_limit: int = 240
 
     def __post_init__(self) -> None:
         if self.excluded_commands is None:
@@ -49,6 +54,9 @@ class SettingsManager:
         sandbox_mode = str(getattr(config, "sandbox_mode", "workspace-write") or "workspace-write").lower()
         if sandbox_mode not in SUPPORTED_SANDBOX_MODES:
             sandbox_mode = "workspace-write"
+        turn_policy_mode = str(getattr(config, "turn_policy_mode", DEFAULT_TURN_POLICY_MODE) or DEFAULT_TURN_POLICY_MODE).lower()
+        if turn_policy_mode != DEFAULT_TURN_POLICY_MODE:
+            turn_policy_mode = DEFAULT_TURN_POLICY_MODE
         statusline_format = str(getattr(config, "statusline_format", DEFAULT_STATUSLINE_FORMAT) or DEFAULT_STATUSLINE_FORMAT).strip()
         runtime = RuntimeSettings(
             output_style=output_style,
@@ -61,6 +69,10 @@ class SettingsManager:
             sandbox_mode=sandbox_mode,
             excluded_commands=list(getattr(config, "excluded_commands", []) or []),
             keybindings_path=str(getattr(config, "keybindings_path", "") or ""),
+            turn_policy_mode=turn_policy_mode,
+            base_turn_limit=_positive_int(getattr(config, "base_turn_limit", 24), 24),
+            turn_extension_step=_positive_int(getattr(config, "turn_extension_step", 12), 12),
+            max_turn_limit=_positive_int(getattr(config, "max_turn_limit", 240), 240),
         )
         return cls(runtime=runtime, config_ref=config, config_manager=config_manager)
 
@@ -172,6 +184,10 @@ class SettingsManager:
                 f"sandbox_mode: {self.runtime.sandbox_mode}",
                 f"excluded_commands: {self.runtime.excluded_commands}",
                 f"keybindings_path: {self.runtime.keybindings_path or '(default)'}",
+                f"turn_policy_mode: {self.runtime.turn_policy_mode}",
+                f"base_turn_limit: {self.runtime.base_turn_limit}",
+                f"turn_extension_step: {self.runtime.turn_extension_step}",
+                f"max_turn_limit: {self.runtime.max_turn_limit}",
             ]
         )
 
@@ -182,3 +198,11 @@ class SettingsManager:
                     setattr(self.config_ref, key, value)
         if self.config_manager is not None:
             self.config_manager.save_config(**kwargs)
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return default
+    return normalized if normalized > 0 else default

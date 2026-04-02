@@ -52,6 +52,20 @@ class ChatStateMachine:
                 continue
 
             try:
-                self.session.handle_input(user_input)
+                if user_input.startswith("/"):
+                    self.session.handle_input(user_input)
+                    continue
+                stream_completed = None
+                if hasattr(self.ui, "begin_live_turn"):
+                    self.ui.begin_live_turn(user_input)
+                for event in self.session.handle_input_stream(user_input):
+                    if hasattr(self.ui, "handle_runtime_event"):
+                        self.ui.handle_runtime_event(event)
+                    if event.get("type") == "stream_completed":
+                        stream_completed = event.get("response")
+                if hasattr(self.ui, "finish_live_turn"):
+                    self.ui.finish_live_turn(stream_completed)
             except Exception as exc:
+                if hasattr(self.ui, "fail_live_turn"):
+                    self.ui.fail_live_turn(str(exc))
                 self.ui.display_message(f"Error: {exc}", style="red")

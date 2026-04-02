@@ -17,7 +17,12 @@ from .config import Config
 from .engine import PermissionContext, QueryEngine, SessionServices, SessionStore
 from .model import ChatModel
 from .prompts import prompt_manager
-from .runtime import RuntimeState, build_runtime_event
+from .runtime import RuntimeState, ToolResultStore, build_runtime_event
+from .runtime.live_updates import (
+    LiveStreamState,
+    build_notice_event_payload,
+    project_progress_event,
+)
 from .services import (
     ContextBudgetService,
     ContextFileTracker,
@@ -150,6 +155,7 @@ class ChatSession:
         self.request_counter = 0
         self.agent_mode = True
         self.attachment_manager = AttachmentManager()
+        self._active_request_id = ""
 
         system_prompt = prompt_manager.resolve_prompt_source(config.system_prompt)
         self.session_store = SessionStore(system_prompt, self.workspace_root, self.session_id)
@@ -165,18 +171,7 @@ class ChatSession:
         self.services.diagnostics = DiagnosticsService(self)
         self.services.context_budget = ContextBudgetService(self)
         self.tool_registry = ToolRegistry(build_default_tools())
-        self.engine = QueryEngine(
-            model=self.model,
-            session_store=self.session_store,
-            tool_registry=self.tool_registry,
-            services=self.services,
-            workspace_root=self.workspace_root,
-            config=self.config,
-            event_callback=self._on_engine_event,
-            ui=self.ui,
-            switch_workspace=self.switch_workspace,
-            reset_workspace=self.reset_workspace,
-        )
+        self.engine = self._build_engine()
         self.team_runtime = self._build_team_runtime(self.workspace_root)
         if self.services.runtime_watcher:
             self.services.runtime_watcher.set_team_runtime_provider(lambda: self.team_runtime)
@@ -189,6 +184,11 @@ class ChatSession:
     def is_headless(self) -> bool:
         return isinstance(self.ui, HeadlessUI)
 
+    @property
+    def live_ui_active(self) -> bool:
+        checker = getattr(self.ui, "is_live_turn_active", None)
+        return bool(callable(checker) and checker())
+
     def handle_input(
         self,
         user_input: str,
@@ -196,11 +196,31 @@ class ChatSession:
         attachment_paths: Optional[List[str]] = None,
     ) -> SessionResponse:
         request_id = self._next_request_id()
+        self._active_request_id = request_id
         turn = self.runtime_state.begin_turn(request_id, request_kind, agent_mode=self.agent_mode)
         self.runtime_state.permission_mode = self.services.permission_manager.mode
         self._clear_ui_output()
         self._poll_runtime_watchers()
-        runtime_task = self.runtime_state.tasks.create(request_id, "session_request", user_input[:120], owner="session")
+        request_run = self.runtime_state.runs.create(
+            request_id,
+            "session_request",
+            self.workspace_root,
+            description=user_input[:240],
+            owner="session",
+            metadata={"request_kind": request_kind, "agent_mode": self.agent_mode},
+        )
+        runtime_task = self.runtime_state.tasks.create(
+            request_id,
+            "session_request",
+            user_input[:120],
+            owner="session",
+            run_id=request_run.id,
+            workspace_root=str(self.workspace_root),
+            worktree_id=self.services.worktree_manager.identity(),
+            artifact_dir=request_run.artifact_dir,
+            transcript_path=request_run.transcript_path,
+            metadata={"request_kind": request_kind},
+        )
         try:
             added_attachments = self._attach_paths(attachment_paths or [])
             self._emit_event(
@@ -226,6 +246,14 @@ class ChatSession:
                 round_count=response.round_count,
             )
             self.runtime_state.tasks.complete(runtime_task.id)
+            self.runtime_state.runs.complete(
+                request_run.id,
+                transcript_path=str(self.session_store.session_dir / "transcript.md"),
+                final_text=response.final_text,
+                round_count=response.round_count,
+            )
+            if response.final_text:
+                self.runtime_state.runs.append_output(request_run.id, response.final_text + "\n")
             self.runtime_state.finish_turn(
                 turn,
                 interrupted=response.interrupted,
@@ -234,13 +262,20 @@ class ChatSession:
                 round_count=response.round_count,
             )
             self._poll_runtime_watchers()
-            self._flush_runtime_notices("post_turn")
+            if not self.live_ui_active:
+                self._flush_runtime_notices("post_turn")
             return response
         except Exception as exc:
             self.runtime_state.tasks.fail(runtime_task.id)
+            self.runtime_state.runs.fail(
+                request_run.id,
+                transcript_path=str(self.session_store.session_dir / "transcript.md"),
+                error=str(exc),
+            )
             self.runtime_state.fail_turn(turn, str(exc))
             raise
         finally:
+            self._active_request_id = ""
             if self.is_headless:
                 self._clear_ui_output()
 
@@ -252,6 +287,7 @@ class ChatSession:
     ):
         channel = self.runtime_state.subscribe()
         result_holder: Dict[str, Any] = {}
+        stream_state = LiveStreamState()
 
         def run() -> None:
             try:
@@ -267,10 +303,14 @@ class ChatSession:
         thread.start()
         try:
             while thread.is_alive() or not channel.empty():
+                self._pump_stream_watchers(stream_state)
                 try:
-                    yield channel.get(timeout=0.1)
+                    event = channel.get(timeout=0.1)
                 except queue.Empty:
+                    self._publish_stream_heartbeat(stream_state)
                     continue
+                stream_state.observe(event)
+                yield event
             if "error" in result_holder:
                 raise result_holder["error"]
             response = result_holder.get("response")
@@ -326,9 +366,9 @@ class ChatSession:
             metadata={"attachments": attachment_meta, "request_id": request_id, "request_kind": request_kind},
         )
 
-        if result.reasoning_text:
+        if result.reasoning_text and not self.live_ui_active:
             self.ui.display_reasoning(result.reasoning_text)
-        if result.final_text:
+        if result.final_text and not self.live_ui_active:
             if hasattr(self.ui, "display_assistant_message"):
                 self.ui.display_assistant_message(result.final_text)
             else:
@@ -354,7 +394,7 @@ class ChatSession:
         notifications = getattr(self.services, "notification_center", None)
         if notifications is not None:
             if event_type == "tool_called":
-                notifications.enqueue(
+                notice = notifications.enqueue(
                     f"Tool called: {event.get('tool_name', '')}",
                     kind="tool_called",
                     tone="warning",
@@ -364,8 +404,9 @@ class ChatSession:
                     collapse_key=f"tool_called:{event.get('tool_name', '')}",
                     metadata=event,
                 )
+                self._emit_runtime_notice(notice, source_event=event_type)
             elif event_type == "tool_result":
-                notifications.enqueue(
+                notice = notifications.enqueue(
                     str(event.get("content", ""))[:240] or "tool result",
                     kind="tool_result",
                     tone="danger" if event.get("is_error") else "success",
@@ -375,9 +416,10 @@ class ChatSession:
                     collapse_key="tool_result:error" if event.get("is_error") else "",
                     metadata=event,
                 )
+                self._emit_runtime_notice(notice, source_event=event_type)
                 denial = (event.get("metadata") or {}).get("permission_denial", {})
                 if denial:
-                    notifications.enqueue_event(
+                    notice = notifications.enqueue_event(
                         "tool_rejected",
                         {
                             "message": str(denial.get("message") or event.get("content", ""))[:240],
@@ -385,8 +427,9 @@ class ChatSession:
                             **event,
                         },
                     )
+                    self._emit_runtime_notice(notice, source_event="tool_rejected")
             elif event_type == "compact_boundary":
-                notifications.enqueue(
+                notice = notifications.enqueue(
                     str(event.get("compact_reason") or "Context compacted into a working summary."),
                     kind="compact_boundary",
                     tone="info",
@@ -396,7 +439,9 @@ class ChatSession:
                     collapse_key="context:compact",
                     metadata=event,
                 )
+                self._emit_runtime_notice(notice, source_event=event_type)
         self._emit_event(event_type, **{key: value for key, value in event.items() if key != "type"})
+        self._emit_progress_update(event)
 
     def _attach_paths(self, attachment_paths: List[str]) -> List[Any]:
         added = []
@@ -462,6 +507,9 @@ class ChatSession:
         previous_permission_mode = self.services.permission_manager.mode
         previous_settings = self.services.settings_manager.runtime
         self.services = self._build_services(self.workspace_root)
+        self.runtime_state.workspace_root = self.workspace_root
+        self.runtime_state.project_root = self.workspace_root
+        self.runtime_state.cwd = self.workspace_root
         self.services.context_visualizer = ContextVisualizer(self)
         self.services.diagnostics = DiagnosticsService(self)
         self.services.context_budget = ContextBudgetService(self)
@@ -476,6 +524,9 @@ class ChatSession:
         self.engine.workspace_root = self.workspace_root
         self.tool_registry = ToolRegistry(build_default_tools())
         self.engine.tool_registry = self.tool_registry
+        self.engine.max_turns = self.services.settings_manager.runtime.base_turn_limit
+        self.engine.turn_extension_step = self.services.settings_manager.runtime.turn_extension_step
+        self.engine.max_turn_limit = self.services.settings_manager.runtime.max_turn_limit
         self.team_runtime = self._build_team_runtime(self.workspace_root)
         if self.services.runtime_watcher:
             self.services.runtime_watcher.set_team_runtime_provider(lambda: self.team_runtime)
@@ -511,6 +562,28 @@ class ChatSession:
             search_service=WorkspaceSearch(workspace_root, Path.home() / ".anuris_debug_runs"),
             diagnostics=None,
             context_budget=None,
+            runtime_state=self.runtime_state,
+            run_manager=self.runtime_state.runs,
+            runtime_queue=self.runtime_state.queue,
+            tool_result_store=ToolResultStore(self.session_store.session_dir / "runtime" / "tool-results"),
+        )
+
+    def _build_engine(self) -> QueryEngine:
+        runtime = self.services.settings_manager.runtime
+        return QueryEngine(
+            model=self.model,
+            session_store=self.session_store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace_root,
+            config=self.config,
+            event_callback=self._on_engine_event,
+            ui=self.ui,
+            switch_workspace=self.switch_workspace,
+            reset_workspace=self.reset_workspace,
+            max_turns=runtime.base_turn_limit,
+            turn_extension_step=runtime.turn_extension_step,
+            max_turn_limit=runtime.max_turn_limit,
         )
 
     def _build_team_runtime(self, workspace_root: Path) -> SessionTeamRuntime:
@@ -518,6 +591,7 @@ class ChatSession:
             model=self.model,
             workspace_root=workspace_root,
             task_manager=self.services.task_manager,
+            runtime_state=self.runtime_state,
         )
 
     def run_prompt_command(self, label: str, prompt: str) -> str:
@@ -548,7 +622,7 @@ class ChatSession:
         self.request_counter += 1
         return f"{self.session_id}_{self.request_counter:04d}"
 
-    def _poll_runtime_watchers(self) -> None:
+    def _poll_runtime_watchers(self, include_notices: bool = True) -> None:
         watcher = getattr(self.services, "runtime_watcher", None)
         notifications = getattr(self.services, "notification_center", None)
         if watcher is None:
@@ -556,8 +630,11 @@ class ChatSession:
         for event in watcher.poll():
             payload = {key: value for key, value in event.items() if key not in {"type", "message"}}
             self._emit_event(str(event.get("type", "runtime_event")), **payload)
-            if notifications is not None and event.get("message"):
-                notifications.enqueue_event(str(event.get("type", "runtime")), dict(event))
+            self._emit_progress_update(event)
+            if notifications is None or not include_notices or not event.get("message"):
+                continue
+            notice = notifications.enqueue_event(str(event.get("type", "runtime")), dict(event))
+            self._emit_runtime_notice(notice, source_event=str(event.get("type", "runtime")))
 
     def _flush_runtime_notices(self, stage: str) -> None:
         if self.is_headless:
@@ -568,6 +645,44 @@ class ChatSession:
         ready = [item.to_dict() for item in notifications.flush_ready(stage)]
         if ready and hasattr(self.ui, "display_notices"):
             self.ui.display_notices(ready)
+
+    def _emit_progress_update(self, event: Dict[str, Any]) -> None:
+        payload = project_progress_event(event)
+        if payload is None:
+            return
+        self._emit_event("progress_update", **payload)
+
+    def _emit_runtime_notice(self, notice: Any, *, source_event: str) -> None:
+        if notice is None:
+            return
+        payload = build_notice_event_payload(
+            notice,
+            source_event=source_event,
+            request_id=self._active_request_id,
+        )
+        self._emit_event("runtime_notice", **payload)
+
+    def _pump_stream_watchers(self, stream_state: LiveStreamState) -> None:
+        now = datetime.now(timezone.utc).timestamp()
+        if not stream_state.due_watcher_poll(now):
+            return
+        self._poll_runtime_watchers(include_notices=False)
+
+    def _publish_stream_heartbeat(self, stream_state: LiveStreamState) -> None:
+        if not stream_state.active_request_id and self._active_request_id:
+            stream_state.mark_started(request_id=self._active_request_id)
+        now = datetime.now(timezone.utc).timestamp()
+        if not stream_state.due_heartbeat(now):
+            return
+        event = self.runtime_state.publish(
+            "heartbeat",
+            request_id=stream_state.active_request_id,
+            status=self.runtime_state.status,
+            last_event_type=stream_state.last_event_type,
+            last_activity_at=stream_state.last_activity_at or datetime.now(timezone.utc).isoformat(),
+        )
+        if self.event_callback:
+            self.event_callback(event)
 
     @staticmethod
     def _build_default_session_id() -> str:

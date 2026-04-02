@@ -13,10 +13,13 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from rich import box
+from rich.live import Live
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+from .live_tui import LiveTurnState, describe_plain_event, render_live_turn
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,8 @@ class ChatUI:
         self.console = Console(highlight=False)
         self._session_ref: Any = None
         self.session = self._create_prompt_session()
+        self._live_turn: LiveTurnState | None = None
+        self._live_display: Live | None = None
 
     def bind_session(self, session: Any) -> None:
         self._session_ref = session
@@ -326,6 +331,67 @@ class ChatUI:
             self.console.print(content, end=end)
             return
         self.console.print(content, style=style, end=end)
+
+    def is_live_turn_active(self) -> bool:
+        return self._live_turn is not None
+
+    def begin_live_turn(self, prompt: str) -> None:
+        self._stop_live_display()
+        self._live_turn = LiveTurnState(prompt=prompt)
+        if self._is_plain_output():
+            self.display_activity_event("request", "Streaming response started")
+            return
+        self._live_display = Live(
+            render_live_turn(self._live_turn, self._palette(), self._session_title()),
+            console=self.console,
+            refresh_per_second=8,
+            transient=True,
+        )
+        self._live_display.__enter__()
+
+    def handle_runtime_event(self, event: Dict[str, Any]) -> None:
+        if self._live_turn is None:
+            return
+        self._live_turn.apply_event(event)
+        if self._is_plain_output():
+            activity = describe_plain_event(event)
+            if activity is not None:
+                self.display_activity_event(activity.label, activity.detail, tone=activity.tone)
+            return
+        if self._live_display is None:
+            return
+        self._live_display.update(
+            render_live_turn(self._live_turn, self._palette(), self._session_title()),
+            refresh=True,
+        )
+
+    def finish_live_turn(self, response: Optional[Dict[str, Any]] = None) -> None:
+        if self._live_turn is None:
+            return
+        if response is not None:
+            self._live_turn.complete_from_response(response)
+        final_text = self._live_turn.final_text or self._live_turn.assistant_text
+        reasoning = self._live_turn.reasoning_text
+        self._stop_live_display()
+        if reasoning.strip():
+            self.display_reasoning(reasoning)
+        if final_text.strip():
+            self.display_assistant_message(final_text)
+        self._live_turn = None
+
+    def fail_live_turn(self, error: str) -> None:
+        if self._live_turn is not None:
+            self._live_turn.error_text = error
+            self._live_turn.status = "failed"
+            self._live_turn.stage = "failed"
+        self._stop_live_display()
+        self._live_turn = None
+
+    def _stop_live_display(self) -> None:
+        if self._live_display is None:
+            return
+        self._live_display.__exit__(None, None, None)
+        self._live_display = None
 
     def display_assistant_message(self, content: str) -> None:
         if not content.strip():

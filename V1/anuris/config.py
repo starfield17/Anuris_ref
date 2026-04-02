@@ -28,6 +28,10 @@ class Config:
     sandbox_mode: str = "workspace-write"
     excluded_commands: list[str] = field(default_factory=list)
     keybindings_path: str = ""
+    turn_policy_mode: str = "adaptive"
+    base_turn_limit: int = 24
+    turn_extension_step: int = 12
+    max_turn_limit: int = 240
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":

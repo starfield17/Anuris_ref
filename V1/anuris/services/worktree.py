@@ -14,6 +14,9 @@ class WorktreeManager:
     def set_workspace_root(self, workspace_root: Path) -> None:
         self.workspace_root = Path(workspace_root).resolve()
 
+    def identity(self) -> str:
+        return str(self.workspace_root)
+
     def list_worktrees(self) -> List[Dict[str, str]]:
         try:
             completed = subprocess.run(
