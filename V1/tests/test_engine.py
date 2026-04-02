@@ -272,6 +272,152 @@ class QueryEngineTests(unittest.TestCase):
         self.assertTrue(compact_event.get("budget", {}).get("should_compact"))
         self.assertTrue(compact_event.get("compact_reason"))
 
+    def test_query_engine_micro_compacts_old_external_tool_results(self):
+        model = FakeModel([{"choices": [{"message": {"content": "Compaction complete."}}]}])
+        store = SessionStore("system", self.workspace, "eng9")
+        artifact_one = self.workspace / "one.txt"
+        artifact_two = self.workspace / "two.txt"
+        artifact_one.write_text("tool one", encoding="utf-8")
+        artifact_two.write_text("tool two", encoding="utf-8")
+        for index in range(6):
+            store.add_tool_result(
+                "read_file",
+                f"call_{index}",
+                f"tool content {index}",
+                metadata={"artifact_path": str(artifact_one if index < 5 else artifact_two)},
+            )
+
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+            auto_compact_chars=999999,
+        )
+
+        engine._maybe_auto_compact("")
+        tool_messages = [message for message in store.messages if message.role == "tool"]
+        self.assertIn("Stored tool result retained", str(tool_messages[0].content))
+
+    def test_query_engine_emergency_compaction_uses_tighter_history_window(self):
+        model = FakeModel([{"choices": [{"message": {"content": "Done."}}]}])
+        store = SessionStore("system", self.workspace, "eng9b")
+        for index in range(8):
+            store.add_user_message(f"user {index} " + ("alpha " * 60))
+            store.add_assistant_message(f"assistant {index} " + ("beta " * 60))
+        events = []
+        session_like = SimpleNamespace(
+            session_store=store,
+            workspace_root=self.workspace,
+            services=self.services,
+        )
+        self.services.context_budget = ContextBudgetService(session_like, soft_limit=999999, hard_limit=999999)
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+            event_callback=events.append,
+            auto_compact_chars=999999,
+        )
+
+        changed = engine._maybe_auto_compact("", emergency=True)
+        self.assertTrue(changed)
+        self.assertEqual(store.messages[1].kind, "compact_boundary")
+        self.assertEqual(len(store.messages), 6)
+        compact_event = next(event for event in events if event.get("type") == "compact_boundary")
+        self.assertEqual(compact_event.get("compact_mode"), "emergency")
+
+    def test_query_engine_keeps_large_read_file_results_inline(self):
+        big_text = "alpha\n" * 2000
+        (self.workspace / "big.txt").write_text(big_text, encoding="utf-8")
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"big.txt"}', "big_read")]}}]},
+                {"choices": [{"message": {"content": "Used the persisted artifact."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng10")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        result = engine.submit("Read the large file.")
+        tool_message = next(message for message in store.messages if message.role == "tool")
+        self.assertEqual(result.final_text, "Used the persisted artifact.")
+        self.assertFalse(tool_message.metadata.get("stored_externally"))
+        self.assertNotIn("artifact_path", tool_message.metadata)
+        self.assertTrue(str(tool_message.content).startswith("alpha\nalpha\n"))
+
+    def test_query_engine_still_persists_large_bash_output(self):
+        big_text = "alpha\n" * 2000
+        (self.workspace / "big.txt").write_text(big_text, encoding="utf-8")
+        model = FakeModel(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [tool_call("bash", '{"command":"cat big.txt"}', "big_bash")],
+                            }
+                        }
+                    ]
+                },
+                {"choices": [{"message": {"content": "Used the persisted artifact."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng10b")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        result = engine.submit("Read the large file with bash.")
+        tool_message = next(message for message in store.messages if message.role == "tool")
+        self.assertEqual(result.final_text, "Used the persisted artifact.")
+        self.assertTrue(tool_message.metadata.get("stored_externally"))
+        self.assertTrue(Path(tool_message.metadata["artifact_path"]).exists())
+
+    def test_query_engine_returns_stub_for_unchanged_repeat_read(self):
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "read_1")]}}]},
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "read_2")]}}]},
+                {"choices": [{"message": {"content": "Done."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng10c")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        result = engine.submit("Read the sample file twice.")
+        tool_messages = [message for message in store.messages if message.role == "tool"]
+        self.assertEqual(result.final_text, "Done.")
+        self.assertEqual(len(tool_messages), 2)
+        self.assertFalse(tool_messages[0].metadata.get("unchanged_since_last_read"))
+        self.assertTrue(tool_messages[1].metadata.get("unchanged_since_last_read"))
+        self.assertIn("File unchanged since last read", str(tool_messages[1].content))
+
     def test_notification_center_drain_for_model_prioritizes_and_preserves_noninjectable_items(self):
         center = NotificationCenter()
         center.enqueue("low", priority=20)

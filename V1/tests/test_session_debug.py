@@ -53,6 +53,40 @@ class SessionAndDebugTests(unittest.TestCase):
         self.assertTrue(any("read_file" in item for item in response.tool_events))
         self.assertIn("Done reading the README.", response.output_text)
 
+    def test_live_ui_session_suppresses_duplicate_final_render(self):
+        class LiveUI:
+            def __init__(self):
+                self.reasoning = []
+                self.assistant = []
+                self.notices = []
+
+            def is_live_turn_active(self):
+                return True
+
+            def display_reasoning(self, content):
+                self.reasoning.append(content)
+
+            def display_assistant_message(self, content):
+                self.assistant.append(content)
+
+            def display_notices(self, notices):
+                self.notices.append(notices)
+
+        session = ChatSession(
+            self.config,
+            ui=LiveUI(),
+            workspace_root=self.workspace,
+            model=FakeModel([{"choices": [{"message": {"content": "Headless reply."}}]}]),
+            session_id="live-ui-sess",
+        )
+
+        response = session.handle_input("hello")
+
+        self.assertEqual(response.final_text, "Headless reply.")
+        self.assertEqual(session.ui.reasoning, [])
+        self.assertEqual(session.ui.assistant, [])
+        self.assertEqual(session.ui.notices, [])
+
     def test_debug_session_manager_records_events_and_transcript(self):
         manager = DebugSessionManager(
             self.config,

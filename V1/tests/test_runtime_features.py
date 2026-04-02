@@ -10,7 +10,10 @@ from pathlib import Path
 
 from anuris.config import Config
 from anuris.debug_server import DebugHTTPServer, DebugSessionManager
+from anuris.session import ChatSession
 from anuris.engine import SessionStore
+from anuris.runtime import RuntimeRunManager, RuntimeState, ToolResultStore
+from anuris.runtime.tool_results import PERSIST_POLICY_NEVER
 from anuris.services.hooks import HookManager
 from anuris.services.memory import MemoryManager
 
@@ -22,6 +25,17 @@ class FakeModel:
     def create_completion(self, messages, stream, tools=None, tool_choice=None):
         del messages, stream, tools, tool_choice
         return self.responses.pop(0)
+
+
+class SlowFakeModel(FakeModel):
+    def __init__(self, responses, *, delay_sec: float = 0.0):
+        super().__init__(responses)
+        self.delay_sec = delay_sec
+
+    def create_completion(self, messages, stream, tools=None, tool_choice=None):
+        if self.delay_sec > 0:
+            threading.Event().wait(self.delay_sec)
+        return super().create_completion(messages, stream, tools=tools, tool_choice=tool_choice)
 
 
 class RuntimeFeatureTests(unittest.TestCase):
@@ -43,6 +57,78 @@ class RuntimeFeatureTests(unittest.TestCase):
         older = store.older_events(latest.first_id, limit=2)
         self.assertEqual(len(older.events), 2)
         self.assertTrue(older.has_more)
+
+    def test_runtime_state_tracks_runs_and_queue(self):
+        state = RuntimeState(
+            session_id="runtime1",
+            workspace_root=self.workspace,
+            event_path=self.workspace / "runtime.jsonl",
+            tasks_root=self.workspace / "runtime-tasks",
+        )
+        run = state.runs.create("run1", "session_request", self.workspace, description="Inspect runtime")
+        task = state.tasks.create(
+            "task1",
+            "background_command",
+            "Inspect runtime",
+            run_id=run.id,
+            workspace_root=str(self.workspace),
+            worktree_id=str(self.workspace),
+            artifact_dir=run.artifact_dir,
+            transcript_path=run.transcript_path,
+        )
+
+        event = state.publish("request_started", request_id="req1", request_kind="message")
+
+        self.assertEqual(event["type"], "request_started")
+        self.assertTrue((Path(run.artifact_dir) / "run.json").exists())
+        self.assertEqual(state.tasks.get(task.id).run_id, run.id)
+        queued = state.queue.peek()
+        self.assertIsNotNone(queued)
+        self.assertEqual(queued.event_type, "request_started")
+
+    def test_tool_result_store_persists_large_payloads(self):
+        store = ToolResultStore(self.workspace / "tool-results", inline_limit=16, preview_chars=10)
+        persisted = store.prepare(
+            tool_name="bash",
+            tool_call_id="call_big",
+            model_content="0123456789abcdefghijklmnopqrstuvwxyz",
+        )
+        self.assertTrue(persisted.metadata["stored_externally"])
+        artifact_path = Path(persisted.metadata["artifact_path"])
+        self.assertTrue(artifact_path.exists())
+        self.assertIn("Tool output stored externally", persisted.content_for_model)
+        self.assertEqual(store.read_artifact(str(artifact_path)), "0123456789abcdefghijklmnopqrstuvwxyz")
+
+    def test_tool_result_store_keeps_never_persist_payloads_inline(self):
+        store = ToolResultStore(self.workspace / "tool-results", inline_limit=16, preview_chars=10)
+        inline = store.prepare(
+            tool_name="read_file",
+            tool_call_id="call_read",
+            model_content="0123456789abcdefghijklmnopqrstuvwxyz",
+            persist_policy=PERSIST_POLICY_NEVER,
+        )
+
+        self.assertFalse(inline.metadata["stored_externally"])
+        self.assertEqual(inline.metadata["persistence_policy"], PERSIST_POLICY_NEVER)
+        self.assertEqual(inline.content_for_model, "0123456789abcdefghijklmnopqrstuvwxyz")
+
+    def test_run_manager_terminal_updates_do_not_duplicate_metadata_fields(self):
+        manager = RuntimeRunManager(self.workspace / "runs")
+        run = manager.create("run_terminal", "session_request", self.workspace)
+
+        completed = manager.complete(
+            run.id,
+            transcript_path=self.workspace / "artifacts" / "transcript.md",
+            output_path=self.workspace / "artifacts" / "output.log",
+            task_id="task-terminal",
+            summary="done",
+        )
+
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.task_id, "task-terminal")
+        self.assertTrue(completed.transcript_path.endswith("transcript.md"))
+        self.assertTrue(completed.output_path.endswith("output.log"))
+        self.assertEqual(completed.metadata, {"summary": "done"})
 
     def test_memory_manager_separates_workspace_and_session_memory(self):
         manager = MemoryManager(self.workspace)
@@ -140,6 +226,40 @@ class RuntimeFeatureTests(unittest.TestCase):
         finally:
             server.shutdown()
 
+    def test_chat_session_stream_emits_progress_and_notice_events(self):
+        (self.workspace / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [_tool_call("read_file", '{"path":"sample.txt"}', "read_1")]}}]},
+                {"choices": [{"message": {"content": "Done."}}]},
+            ]
+        )
+        session = ChatSession(self.config, workspace_root=self.workspace, model=model, session_id="live_updates_1")
+
+        events = list(session.handle_input_stream("Inspect the sample file."))
+        event_types = [event["type"] for event in events]
+
+        self.assertIn("tool_called", event_types)
+        self.assertIn("runtime_notice", event_types)
+        self.assertIn("progress_update", event_types)
+        self.assertIn("stream_completed", event_types)
+        self.assertLess(event_types.index("runtime_notice"), event_types.index("stream_completed"))
+        self.assertLess(event_types.index("progress_update"), event_types.index("stream_completed"))
+
+    def test_chat_session_stream_emits_heartbeat_for_slow_requests(self):
+        model = SlowFakeModel(
+            [{"choices": [{"message": {"content": "Done."}}]}],
+            delay_sec=1.2,
+        )
+        session = ChatSession(self.config, workspace_root=self.workspace, model=model, session_id="live_updates_2")
+
+        events = list(session.handle_input_stream("Reply slowly."))
+        event_types = [event["type"] for event in events]
+
+        self.assertIn("heartbeat", event_types)
+        self.assertIn("stream_completed", event_types)
+        self.assertLess(event_types.index("heartbeat"), event_types.index("stream_completed"))
+
 
 def _masked_frame(text: str) -> bytes:
     payload = text.encode("utf-8")
@@ -150,6 +270,17 @@ def _masked_frame(text: str) -> bytes:
     header = bytes([0x81, 0x80 | length])
     masked = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
     return header + mask + masked
+
+
+def _tool_call(name: str, arguments: str, tool_id: str = "call_1") -> dict:
+    return {
+        "id": tool_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments,
+        },
+    }
 
 
 def _read_text_frame(client: socket.socket) -> str:

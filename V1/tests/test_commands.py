@@ -614,6 +614,34 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertEqual(restored.services.settings_manager.runtime.sandbox_mode, "read-only")
         self.assertEqual(restored.services.settings_manager.runtime.excluded_commands, ["npm run test"])
 
+    def test_session_engine_uses_persisted_turn_budget_settings(self):
+        config_path = self.workspace / "anuris_turns.toml"
+        manager = ConfigManager(config_file=config_path)
+        manager.save_config(
+            base_turn_limit=30,
+            turn_extension_step=9,
+            max_turn_limit=81,
+        )
+
+        loaded = manager.load_config()
+        self.assertEqual(loaded.base_turn_limit, 30)
+        self.assertEqual(loaded.turn_extension_step, 9)
+        self.assertEqual(loaded.max_turn_limit, 81)
+
+        restored = ChatSession(
+            loaded,
+            model=FakeModel(),
+            workspace_root=self.workspace,
+            session_id="turnbudgetcfg",
+            config_manager=manager,
+        )
+        self.assertEqual(restored.services.settings_manager.runtime.base_turn_limit, 30)
+        self.assertEqual(restored.services.settings_manager.runtime.turn_extension_step, 9)
+        self.assertEqual(restored.services.settings_manager.runtime.max_turn_limit, 81)
+        self.assertEqual(restored.engine.max_turns, 30)
+        self.assertEqual(restored.engine.turn_extension_step, 9)
+        self.assertEqual(restored.engine.max_turn_limit, 81)
+
     def test_agents_command_drives_team_inbox_and_governance(self):
         session = ChatSession(
             Config(api_key="k", model="fake-model", base_url="https://example.com/v1"),

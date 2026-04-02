@@ -5,14 +5,17 @@ import time
 import unittest
 from pathlib import Path
 
+from anuris.agent.autonomy import AutonomousTaskController
 from anuris.agent.executor import AgentToolExecutor
 from anuris.agent.loop import AgentLoopRunner
 from anuris.agent.skills import SkillLoader
 from anuris.agent.tasks import PersistentTaskManager
 from anuris.agent.team import TeamManager
+from anuris.agent.background import BackgroundManager
 from anuris.agent.todo import TodoManager
 from anuris.config import Config
 from anuris.engine import QueryEngine, SessionServices, SessionStore
+from anuris.runtime import RuntimeState
 from anuris.services import (
     ContextFileTracker,
     HookManager,
@@ -265,6 +268,30 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertIn("Override review flow", loader.descriptions())
             self.assertIn("Did you mean", loader.load("reviwer"))
 
+    def test_skill_loader_prefetch_respects_path_scope(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "skills").mkdir()
+            (workspace / "src").mkdir()
+            (workspace / "docs").mkdir()
+            (workspace / "src" / "app.py").write_text("print('hi')", encoding="utf-8")
+            (workspace / "docs" / "notes.md").write_text("notes", encoding="utf-8")
+            (workspace / "skills" / "python-review.md").write_text(
+                "---\n"
+                "description: Review Python source\n"
+                "paths: src/**/*.py\n"
+                "---\n"
+                "review scoped\n",
+                encoding="utf-8",
+            )
+            loader = SkillLoader(workspace)
+
+            hidden = loader.prefetch("review this code", current_paths=[workspace / "docs" / "notes.md"])
+            shown = loader.prefetch("review this code", current_paths=[workspace / "src" / "app.py"])
+
+            self.assertEqual(hidden, [])
+            self.assertEqual([item["name"] for item in shown], ["python-review"])
+
 
 class TeamAndLoopTests(unittest.TestCase):
     def test_team_manager_supports_spawn_messaging_shutdown_and_plan_review(self):
@@ -307,6 +334,60 @@ class TeamAndLoopTests(unittest.TestCase):
             self.assertIn("rejected", review)
             worker_updates = manager.read_inbox("worker1")
             self.assertTrue(any(message.get("type") == "plan_approval_response" for message in worker_updates))
+
+    def test_background_manager_records_runtime_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            state = RuntimeState(
+                session_id="bgsess",
+                workspace_root=workspace,
+                event_path=workspace / "runtime.jsonl",
+                tasks_root=workspace / "runtime-tasks",
+            )
+            manager = BackgroundManager(
+                workspace,
+                runtime_task_manager=state.tasks,
+                runtime_run_manager=state.runs,
+                runtime_queue=state.queue,
+            )
+
+            started = manager.run("printf 'background-ok'", timeout=5)
+            task_id = started.split()[2]
+            deadline = time.time() + 2
+            while "completed" not in manager.check(task_id) and time.time() < deadline:
+                time.sleep(0.05)
+
+            task_record = state.tasks.get(task_id)
+            run_record = state.runs.get(task_id)
+            self.assertEqual(task_record.run_id, run_record.id)
+            self.assertTrue(Path(run_record.output_path).exists())
+            self.assertTrue(any(item.event_type == "background_task_finished" for item in state.queue.list()))
+
+    def test_autonomous_task_controller_executes_next_task(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            task_manager = PersistentTaskManager(workspace / ".anuris" / "tasks")
+            created = json.loads(task_manager.create("Inspect runtime", task_type="agent"))
+            state = RuntimeState(
+                session_id="autosess",
+                workspace_root=workspace,
+                event_path=workspace / "runtime.jsonl",
+                tasks_root=workspace / "runtime-tasks",
+            )
+            controller = AutonomousTaskController(
+                task_manager,
+                workspace_root=workspace,
+                run_manager=state.runs,
+                runtime_task_manager=state.tasks,
+                runtime_queue=state.queue,
+            )
+
+            controller.run_next("lead", lambda task: f"done {task['subject']}")
+            updated = json.loads(task_manager.get(created["id"]))
+
+            self.assertEqual(updated["status"], "completed")
+            self.assertTrue(updated["run_id"])
+            self.assertTrue(any(item.event_type == "autonomous_task_completed" for item in state.queue.list()))
 
     def test_agent_loop_hot_swaps_tools_for_todo_updates(self):
         model = FakeModel(

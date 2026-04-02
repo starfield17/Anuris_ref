@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -224,3 +225,136 @@ class QueryEngineLongTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Tool pairing mismatch detected"):
             engine.submit("Continue from the corrupted session.")
         self.assertEqual(model.calls, [])
+
+    def test_query_engine_extends_turn_budget_for_long_cli_project(self):
+        events = []
+        responses = []
+        project_dir = self.workspace / "cli_project"
+        file_specs = [
+            ("README.md", "# CLI Project\n"),
+            ("pyproject.toml", "[project]\nname='cli-project'\n"),
+            ("src/cli_project/__init__.py", ""),
+            ("src/cli_project/main.py", "def main():\n    return 0\n"),
+            ("src/cli_project/args.py", "def build_parser():\n    return None\n"),
+            ("src/cli_project/commands.py", "COMMANDS = {}\n"),
+            ("src/cli_project/io.py", "def write(msg):\n    return msg\n"),
+            ("src/cli_project/config.py", "DEFAULTS = {}\n"),
+            ("src/cli_project/version.py", "__version__ = '0.1.0'\n"),
+            ("src/cli_project/__main__.py", "from .main import main\n"),
+            ("tests/test_main.py", "def test_main():\n    assert True\n"),
+            ("tests/test_args.py", "def test_args():\n    assert True\n"),
+            ("tests/test_commands.py", "def test_commands():\n    assert True\n"),
+            ("docs/usage.md", "Usage docs\n"),
+            ("docs/design.md", "Design notes\n"),
+            ("scripts/dev.sh", "#!/usr/bin/env bash\n"),
+            (".gitignore", "__pycache__/\n"),
+            ("src/cli_project/helptext.py", "HELP = 'help'\n"),
+            ("src/cli_project/exit_codes.py", "OK = 0\n"),
+            ("src/cli_project/state.py", "STATE = {}\n"),
+            ("src/cli_project/runner.py", "def run():\n    return 0\n"),
+            ("src/cli_project/formatter.py", "def fmt(v):\n    return str(v)\n"),
+            ("tests/test_runner.py", "def test_runner():\n    assert True\n"),
+            ("tests/test_formatter.py", "def test_formatter():\n    assert True\n"),
+            ("Makefile", "test:\n\tpython -m pytest\n"),
+        ]
+        for index, (relative_path, content) in enumerate(file_specs, start=1):
+            responses.append(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    tool_call(
+                                        "write_file",
+                                        json.dumps(
+                                            {
+                                                "path": str(project_dir / relative_path),
+                                                "content": content,
+                                            }
+                                        ),
+                                        f"write_{index}",
+                                    )
+                                ],
+                            }
+                        }
+                    ]
+                }
+            )
+        responses.append({"choices": [{"message": {"content": "CLI project completed successfully."}}]})
+        model = FakeModel(responses)
+        store = SessionStore("system", self.workspace, "cli_project_long")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+            event_callback=events.append,
+            max_turns=24,
+            turn_extension_step=12,
+            max_turn_limit=48,
+        )
+
+        result = engine.submit("Create a small CLI project in a new workdir.")
+        self.assertEqual(result.final_text, "CLI project completed successfully.")
+        self.assertGreater(result.rounds, 24)
+        self.assertTrue((project_dir / "src/cli_project/main.py").exists())
+        self.assertTrue((project_dir / "tests/test_formatter.py").exists())
+        extension_event = next(event for event in events if event.get("type") == "turn_budget_extended")
+        self.assertEqual(extension_event.get("previous_limit"), 24)
+        self.assertEqual(extension_event.get("new_limit"), 36)
+
+    def test_query_engine_raises_explicit_turn_budget_exhaustion(self):
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "step_1")]}}]},
+                {"choices": [{"message": {"content": "unreachable"}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "budget_exhausted")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+            max_turns=1,
+            turn_extension_step=1,
+            max_turn_limit=1,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Query turn budget exhausted"):
+            engine.submit("Try one step beyond the hard maximum.")
+        self.assertEqual(len(model.calls), 1)
+
+    def test_query_engine_does_not_extend_for_low_value_repeat_reads(self):
+        events = []
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "read_1")]}}]},
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "read_2")]}}]},
+                {"choices": [{"message": {"content": "unreachable"}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "repeat_read_budget")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+            event_callback=events.append,
+            max_turns=2,
+            turn_extension_step=1,
+            max_turn_limit=3,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Query turn budget exhausted"):
+            engine.submit("Keep re-reading the same file.")
+        event_types = [event["type"] for event in events]
+        self.assertIn("low_value_read_repetition", event_types)
+        self.assertNotIn("turn_budget_extended", event_types)
