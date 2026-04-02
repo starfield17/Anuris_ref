@@ -29,6 +29,7 @@ class BaseTool:
     usage_policy = ""
     requires_write = False
     coordination_tool = False
+    result_persistence_policy = "persist"
 
     def schema(self) -> Dict[str, Any]:
         return {

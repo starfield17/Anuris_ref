@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .base import BaseTool, ToolExecutionResult
+from .read_tracker import ReadTracker, UNCHANGED_READ_MESSAGE
 
 
 def _resolve_workspace_path(workspace_root: Path, raw_path: str) -> Path:
@@ -113,6 +114,7 @@ class ReadFileTool(BaseTool):
     search_hint = "inspect code, config, docs, and transcripts"
     permission_type = "read"
     usage_policy = "Use for targeted reads; prefer line ranges when only part of a file is needed."
+    result_persistence_policy = "never_persist"
 
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -128,18 +130,47 @@ class ReadFileTool(BaseTool):
     def execute(self, args: Dict[str, Any], context: Any) -> ToolExecutionResult:
         path = _resolve_workspace_path(context.workspace_root, str(args.get("path", "")))
         context.services.context_files.record(path)
-        text = path.read_text(encoding="utf-8")
         start_line = int(args.get("start_line", 1))
         end_line = int(args.get("end_line", 0))
+        tracker = _read_tracker_for(context)
+        mtime_ns = path.stat().st_mtime_ns
+        if tracker.is_unchanged(path, start_line, end_line, mtime_ns):
+            return ToolExecutionResult(
+                model_content=UNCHANGED_READ_MESSAGE,
+                summary=f"read_file {path.relative_to(context.workspace_root)}",
+                metadata={
+                    "path": str(path.relative_to(context.workspace_root)),
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "mtime_ns": mtime_ns,
+                    "unchanged_since_last_read": True,
+                },
+            )
+        text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
         if end_line > 0:
             snippet = lines[start_line - 1 : end_line]
         else:
             snippet = lines[start_line - 1 :]
         content = "\n".join(snippet)
+        snapshot = tracker.remember(
+            path,
+            start_line,
+            end_line,
+            mtime_ns=mtime_ns,
+            content=content,
+        )
         return ToolExecutionResult(
             model_content=content,
             summary=f"read_file {path.relative_to(context.workspace_root)}",
+            metadata={
+                "path": str(path.relative_to(context.workspace_root)),
+                "start_line": start_line,
+                "end_line": end_line,
+                "mtime_ns": snapshot.mtime_ns,
+                "content_hash": snapshot.content_hash,
+                "unchanged_since_last_read": False,
+            },
         )
 
 
@@ -617,3 +648,11 @@ def build_default_tools() -> List[BaseTool]:
         ExitWorktreeTool(),
         AgentTaskTool(),
     ]
+
+
+def _read_tracker_for(context: Any) -> ReadTracker:
+    tracker = getattr(context.services, "read_file_tracker", None)
+    if tracker is None:
+        tracker = ReadTracker()
+        context.services.read_file_tracker = tracker
+    return tracker
