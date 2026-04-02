@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
@@ -25,6 +26,12 @@ class PairingIssue:
         return bool(self.missing_tool_results or self.orphaned_tool_results)
 
 
+@dataclass(frozen=True)
+class LoopProgressDecision:
+    stall_reason: str = ""
+    low_value_repetition: bool = False
+
+
 class LoopProgressGuard:
     """Detect repeated no-progress tool batches."""
 
@@ -32,21 +39,39 @@ class LoopProgressGuard:
         self.threshold = threshold
         self._last_fingerprint = ""
         self._repeat_count = 0
+        self._last_read_targets: tuple[str, ...] = ()
 
-    def record(self, tool_calls: Iterable[ToolCall], tool_results: Iterable[ConversationMessage]) -> str:
-        fingerprint = _tool_batch_fingerprint(tool_calls, tool_results)
+    def record(
+        self,
+        tool_calls: Iterable[ToolCall],
+        tool_results: Iterable[ConversationMessage],
+    ) -> LoopProgressDecision:
+        call_list = list(tool_calls)
+        result_list = list(tool_results)
+        fingerprint = _tool_batch_fingerprint(call_list, result_list)
         if not fingerprint:
             self._last_fingerprint = ""
             self._repeat_count = 0
-            return ""
+            self._last_read_targets = ()
+            return LoopProgressDecision()
         if fingerprint == self._last_fingerprint:
             self._repeat_count += 1
         else:
             self._last_fingerprint = fingerprint
             self._repeat_count = 1
+        read_targets = _extract_read_targets(call_list)
+        low_value_repetition = (
+            bool(read_targets)
+            and read_targets == self._last_read_targets
+            and _results_are_low_value(result_list)
+        )
+        self._last_read_targets = read_targets
         if self._repeat_count >= self.threshold:
-            return f"Tool loop stalled after {self._repeat_count} repeated batches."
-        return ""
+            return LoopProgressDecision(
+                stall_reason=f"Tool loop stalled after {self._repeat_count} repeated batches.",
+                low_value_repetition=low_value_repetition,
+            )
+        return LoopProgressDecision(low_value_repetition=low_value_repetition)
 
 
 def continuation_message_for(finish_reason: str, continuation_count: int) -> str:
@@ -119,8 +144,67 @@ def _tool_batch_fingerprint(
     return json.dumps({"calls": calls, "results": results}, ensure_ascii=False, sort_keys=True)
 
 
+def tool_batch_fingerprint(
+    tool_calls: Iterable[ToolCall],
+    tool_results: Iterable[ConversationMessage],
+) -> str:
+    return _tool_batch_fingerprint(tool_calls, tool_results)
+
+
 def _normalize_json(value: str) -> Any:
     try:
         return json.loads(value or "{}")
     except json.JSONDecodeError:
         return value
+
+
+def _extract_read_targets(tool_calls: List[ToolCall]) -> tuple[str, ...]:
+    targets: list[str] = []
+    for tool_call in tool_calls:
+        if tool_call.name == "read_file":
+            target = _read_file_target(tool_call.arguments_json)
+        elif tool_call.name == "bash":
+            target = _bash_read_target(tool_call.arguments_json)
+        else:
+            return ()
+        if not target:
+            return ()
+        targets.append(target)
+    return tuple(sorted(set(targets)))
+
+
+def _read_file_target(arguments_json: str) -> str:
+    payload = _normalize_json(arguments_json)
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("path", "")).strip()
+
+
+def _bash_read_target(arguments_json: str) -> str:
+    payload = _normalize_json(arguments_json)
+    if not isinstance(payload, dict):
+        return ""
+    command = str(payload.get("command", "")).strip()
+    if not command or any(token in command for token in ("|", "&&", "||", ";")):
+        return ""
+    parts = shlex.split(command)
+    if not parts:
+        return ""
+    if parts[0] in {"cat", "head", "tail", "wc"}:
+        return parts[-1] if len(parts) > 1 else ""
+    if parts[0] == "sed" and "-n" in parts[1:]:
+        return parts[-1] if len(parts) > 2 else ""
+    return ""
+
+
+def _results_are_low_value(tool_results: List[ConversationMessage]) -> bool:
+    if not tool_results:
+        return False
+    for item in tool_results:
+        metadata = item.metadata or {}
+        if metadata.get("stored_externally") or metadata.get("unchanged_since_last_read"):
+            continue
+        if "Tool output stored externally at " in extract_text_content(item.content):
+            continue
+        return False
+    return True

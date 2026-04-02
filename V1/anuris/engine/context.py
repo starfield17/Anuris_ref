@@ -103,6 +103,11 @@ class SessionServices:
     search_service: Any = None
     diagnostics: Any = None
     context_budget: Any = None
+    runtime_state: Any = None
+    run_manager: Any = None
+    runtime_queue: Any = None
+    tool_result_store: Any = None
+    read_file_tracker: Any = None
 
 
 @dataclass
