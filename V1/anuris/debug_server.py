@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from .config import Config
+from .runtime.history import HistoryPage
+from .runtime.transports import decode_websocket_frame, encode_sse_event, encode_websocket_text, websocket_accept_value
 from .session import ChatSession
 
 
@@ -264,6 +266,32 @@ class DebugSessionManager:
             "events_path": str(entry.recorder.events_path),
         }
 
+    def get_history(self, session_id: str, limit: int = 100, before_id: str = "") -> Dict[str, Any]:
+        entry = self._get_entry(session_id)
+        page = self._history_page(entry, limit=limit, before_id=before_id)
+        return {
+            "session_id": session_id,
+            "events": page.events,
+            "first_id": page.first_id,
+            "has_more": page.has_more,
+            "events_path": str(entry.recorder.events_path),
+        }
+
+    def stream_message(self, session_id: str, payload: Dict[str, Any], request_kind: str = "message"):
+        entry = self._get_entry(session_id)
+        content = payload.get("message") if request_kind == "message" else payload.get("task") or payload.get("prompt")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Request body must include non-empty message/task text")
+        attachment_paths = payload.get("attachments") or []
+        for event in entry.session.handle_input_stream(content, request_kind=request_kind, attachment_paths=attachment_paths):
+            yield event
+
+    def _history_page(self, entry: DebugSessionEntry, limit: int, before_id: str) -> HistoryPage:
+        history = entry.session.runtime_state.history
+        if before_id:
+            return history.older(before_id=before_id, limit=limit)
+        return history.latest(limit=limit)
+
     def get_transcript(self, session_id: str) -> Dict[str, Any]:
         entry = self._get_entry(session_id)
         return {
@@ -430,11 +458,17 @@ class DebugHTTPServer:
                         result = manager.submit_message(path_parts[1], payload, request_kind=request_kind)
                         self._respond_json(200, result)
                         return
+                    if len(path_parts) == 4 and path_parts[0] == "sessions" and path_parts[2] in {"message", "task"} and path_parts[3] == "stream":
+                        request_kind = "message" if path_parts[2] == "message" else "task"
+                        self._respond_sse(manager.stream_message(path_parts[1], payload, request_kind=request_kind))
+                        return
                     self._respond_json(404, {"error": f"Unknown path: {parsed.path}"})
                 except KeyError as exc:
                     self._respond_json(404, {"error": str(exc)})
                 except ValueError as exc:
                     self._respond_json(400, {"error": str(exc)})
+                except (BrokenPipeError, ConnectionResetError):
+                    return
                 except Exception as exc:
                     self._respond_json(500, {"error": str(exc)})
 
@@ -442,11 +476,24 @@ class DebugHTTPServer:
                 try:
                     parsed = urlparse(self.path)
                     path_parts = [part for part in parsed.path.split("/") if part]
+                    if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "ws":
+                        self._handle_websocket(path_parts[1])
+                        return
                     if len(path_parts) == 2 and path_parts[0] == "sessions":
                         self._respond_json(200, manager.get_session(path_parts[1]))
                         return
                     if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "events":
                         self._respond_json(200, manager.get_events(path_parts[1]))
+                        return
+                    if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "history":
+                        query = self._query_params(parsed.query)
+                        limit = int(query.get("limit", "100") or "100")
+                        before_id = query.get("before_id", "")
+                        self._respond_json(200, manager.get_history(path_parts[1], limit=limit, before_id=before_id))
+                        return
+                    if len(path_parts) == 4 and path_parts[0] == "sessions" and path_parts[2] == "events" and path_parts[3] == "stream":
+                        page = manager.get_history(path_parts[1], limit=200)
+                        self._respond_sse(page["events"])
                         return
                     if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "transcript":
                         self._respond_json(200, manager.get_transcript(path_parts[1]))
@@ -454,6 +501,8 @@ class DebugHTTPServer:
                     self._respond_json(404, {"error": f"Unknown path: {parsed.path}"})
                 except KeyError as exc:
                     self._respond_json(404, {"error": str(exc)})
+                except (BrokenPipeError, ConnectionResetError):
+                    return
                 except Exception as exc:
                     self._respond_json(500, {"error": str(exc)})
 
@@ -479,5 +528,52 @@ class DebugHTTPServer:
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            def _respond_sse(self, events) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                for event in events:
+                    self.wfile.write(encode_sse_event(event))
+                    self.wfile.flush()
+                self.close_connection = True
+
+            def _handle_websocket(self, session_id: str) -> None:
+                if self.headers.get("Upgrade", "").lower() != "websocket":
+                    self._respond_json(400, {"error": "Expected WebSocket upgrade"})
+                    return
+                accept = websocket_accept_value(self.headers.get("Sec-WebSocket-Key", ""))
+                self.send_response(101, "Switching Protocols")
+                self.send_header("Upgrade", "websocket")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Sec-WebSocket-Accept", accept)
+                self.end_headers()
+                self.connection.sendall(encode_websocket_text(json.dumps({"type": "session_connected", "session_id": session_id})))
+                while True:
+                    frame = self.connection.recv(65536)
+                    if not frame:
+                        return
+                    message = decode_websocket_frame(frame)
+                    if not message:
+                        continue
+                    payload = json.loads(message)
+                    request_kind = str(payload.get("request_kind", "message") or "message")
+                    for event in manager.stream_message(session_id, payload, request_kind=request_kind):
+                        try:
+                            self.connection.sendall(encode_websocket_text(json.dumps(event, ensure_ascii=False)))
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+
+            @staticmethod
+            def _query_params(raw_query: str) -> Dict[str, str]:
+                result: Dict[str, str] = {}
+                for item in raw_query.split("&"):
+                    if "=" not in item:
+                        continue
+                    key, value = item.split("=", 1)
+                    result[key] = value
+                return result
 
         return Handler

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
+from ..runtime.hooks import StructuredHookManager
 
 class HookManager:
     """Simple local hook registry for tool and session events."""
@@ -36,6 +36,7 @@ class HookManager:
         self.hooks_path = self.workspace_root / ".anuris" / "hooks.json"
         self.hooks_path.parent.mkdir(parents=True, exist_ok=True)
         self.hooks: List[Dict[str, str]] = []
+        self.structured = StructuredHookManager(self.workspace_root, self.hooks_path)
         self.reload()
 
     def reload(self) -> None:
@@ -67,29 +68,21 @@ class HookManager:
         return entry
 
     def run(self, event: str, payload: Dict[str, Any]) -> List[Dict[str, str]]:
-        results: List[Dict[str, str]] = []
-        for entry in self.hooks:
-            if entry.get("event") != event:
-                continue
-            completed = subprocess.run(
-                entry["command"],
-                cwd=self.workspace_root,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            results.append(
-                {
-                    "event": event,
-                    "command": entry["command"],
-                    "returncode": str(completed.returncode),
-                    "stdout": completed.stdout.strip(),
-                    "stderr": completed.stderr.strip(),
-                    "payload": json.dumps(payload, ensure_ascii=False)[:1000],
-                }
-            )
-        return results
+        return [item.to_legacy_dict(payload) for item in self.structured.execute(event, payload)]
+
+    def run_structured(self, event: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "event": item.event,
+                "command": item.command,
+                "outcome": item.outcome,
+                "returncode": item.returncode,
+                "stdout": item.stdout,
+                "stderr": item.stderr,
+                "blocking": item.blocking,
+            }
+            for item in self.structured.execute(event, payload)
+        ]
 
     def render(self) -> str:
         if not self.hooks:

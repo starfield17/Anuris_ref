@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..runtime.events import build_runtime_event
+from ..runtime.history import EventHistory, HistoryPage
 from .messages import ConversationMessage, extract_text_content
 
 
@@ -17,16 +19,19 @@ class SessionStore:
         self.title: Optional[str] = None
         self.session_dir = self.workspace_root / ".anuris" / "sessions" / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.event_history = EventHistory(self.session_dir / "events.jsonl")
         self.messages: List[ConversationMessage] = [
             ConversationMessage(role="system", content=system_prompt, kind="system")
         ]
         self._persist_snapshot()
+        self._record_lifecycle_event("session_initialized", content=system_prompt, role="system")
 
     def reset(self, system_prompt: Optional[str] = None) -> None:
         prompt = system_prompt or self.system_prompt
         self.messages = [ConversationMessage(role="system", content=prompt, kind="system")]
         self.write_transcript()
         self._persist_snapshot()
+        self._record_lifecycle_event("session_reset", content=prompt, role="system")
 
     @property
     def system_prompt(self) -> str:
@@ -38,6 +43,7 @@ class SessionStore:
     def append(self, message: ConversationMessage) -> ConversationMessage:
         self.messages.append(message)
         self._persist_snapshot()
+        self._record_message_event(message)
         return message
 
     def add_user_message(self, content: Any, metadata: Optional[Dict[str, Any]] = None) -> ConversationMessage:
@@ -117,6 +123,7 @@ class SessionStore:
         self.title = _normalize_title(payload.get("title"))
         self.write_transcript()
         self._persist_snapshot()
+        self._record_lifecycle_event("session_loaded", path=str(path))
         return path
 
     def approximate_size(self) -> int:
@@ -151,14 +158,17 @@ class SessionStore:
         self.messages = [system_message, compact_boundary, *tail]
         self.write_transcript()
         self._persist_snapshot()
+        self._record_message_event(compact_boundary)
         return summary
 
     def retarget_workspace(self, workspace_root: Path) -> None:
         self.workspace_root = Path(workspace_root).resolve()
         self.session_dir = self.workspace_root / ".anuris" / "sessions" / self.session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.event_history = EventHistory(self.session_dir / "events.jsonl")
         self.write_transcript()
         self._persist_snapshot()
+        self._record_lifecycle_event("workspace_retargeted", workspace_root=str(self.workspace_root))
 
     def load_snapshot_path(self, snapshot_path: Path) -> None:
         payload = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
@@ -169,6 +179,7 @@ class SessionStore:
         self.title = _normalize_title(payload.get("title"))
         self.write_transcript()
         self._persist_snapshot()
+        self._record_lifecycle_event("snapshot_loaded", path=str(snapshot_path))
 
     def rewind_turns(self, turns: int = 1) -> int:
         turns = max(1, int(turns))
@@ -184,7 +195,14 @@ class SessionStore:
             removed += 1
         self.write_transcript()
         self._persist_snapshot()
+        self._record_lifecycle_event("session_rewound", turns=turns, removed=removed)
         return removed
+
+    def latest_events(self, limit: int = 100) -> HistoryPage:
+        return self.event_history.latest(limit=limit)
+
+    def older_events(self, before_id: str, limit: int = 100) -> HistoryPage:
+        return self.event_history.older(before_id=before_id, limit=limit)
 
     def describe(self) -> str:
         lines = [
@@ -422,6 +440,24 @@ class SessionStore:
         }
         snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return snapshot_path
+
+    def _record_message_event(self, message: ConversationMessage) -> None:
+        self.event_history.append(
+            build_runtime_event(
+                "session_message",
+                session_id=self.session_id,
+                role=message.role,
+                message_kind=message.kind,
+                content=message.preview(10000),
+                reasoning=message.reasoning,
+                tool_name=message.name or "",
+                tool_call_id=message.tool_call_id or "",
+                metadata=dict(message.metadata),
+            )
+        )
+
+    def _record_lifecycle_event(self, event_type: str, **payload: Any) -> None:
+        self.event_history.append(build_runtime_event(event_type, session_id=self.session_id, **payload))
 
 
 def _normalize_title(value: Any) -> Optional[str]:

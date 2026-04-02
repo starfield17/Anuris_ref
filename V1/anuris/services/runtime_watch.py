@@ -6,14 +6,24 @@ from typing import Any, Callable, Dict, List, Optional
 class RuntimeWatcher:
     """Polls task and teammate state changes and turns them into events/notices."""
 
-    def __init__(self, task_manager: Any, team_runtime_provider: Optional[Callable[[], Any]] = None):
+    def __init__(
+        self,
+        task_manager: Any,
+        team_runtime_provider: Optional[Callable[[], Any]] = None,
+        runtime_task_provider: Optional[Callable[[], Any]] = None,
+    ):
         self.task_manager = task_manager
         self.team_runtime_provider = team_runtime_provider
+        self.runtime_task_provider = runtime_task_provider
         self._known_task_status: Dict[int, str] = {}
         self._known_team_status: Dict[str, str] = {}
+        self._known_runtime_task_status: Dict[str, str] = {}
 
     def set_team_runtime_provider(self, provider: Callable[[], Any]) -> None:
         self.team_runtime_provider = provider
+
+    def set_runtime_task_provider(self, provider: Callable[[], Any]) -> None:
+        self.runtime_task_provider = provider
 
     def poll(self) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
@@ -41,6 +51,31 @@ class RuntimeWatcher:
                         }
                     )
             self._known_task_status[task_id] = status
+
+        runtime_tasks = self.runtime_task_provider() if self.runtime_task_provider else None
+        if runtime_tasks is not None and hasattr(runtime_tasks, "list"):
+            for task in runtime_tasks.list():
+                task_id = str(getattr(task, "id", "") or "")
+                status = str(getattr(task, "status", "") or "")
+                previous = self._known_runtime_task_status.get(task_id)
+                if previous and previous != status:
+                    event_type = "task_completed" if status == "completed" else "task_status_changed"
+                    events.append(
+                        {
+                            "type": event_type,
+                            "message": f"Runtime task {task_id} changed {previous} -> {status}",
+                            "task": {
+                                "id": task_id,
+                                "status": status,
+                                "kind": getattr(task, "kind", ""),
+                                "description": getattr(task, "description", ""),
+                                "owner": getattr(task, "owner", ""),
+                            },
+                            "previous_status": previous,
+                            "runtime_task": True,
+                        }
+                    )
+                self._known_runtime_task_status[task_id] = status
 
         team_runtime = self.team_runtime_provider() if self.team_runtime_provider else None
         if team_runtime and hasattr(team_runtime, "roster"):

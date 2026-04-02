@@ -8,8 +8,9 @@ from typing import Dict, List, Optional
 class BackgroundManager:
     """s08-style background task runner with notification draining."""
 
-    def __init__(self, workspace_root: Path):
+    def __init__(self, workspace_root: Path, runtime_task_manager: Optional[object] = None):
         self.workspace_root = workspace_root.resolve()
+        self.runtime_task_manager = runtime_task_manager
         self.tasks: Dict[str, Dict[str, Optional[str]]] = {}
         self._notifications: List[Dict[str, str]] = []
         self._lock = threading.Lock()
@@ -25,6 +26,9 @@ class BackgroundManager:
                 "command": command,
                 "result": None,
             }
+        if self.runtime_task_manager is not None:
+            self.runtime_task_manager.create(task_id, "background_command", command[:120], owner="background")
+            self.runtime_task_manager.update(task_id, "running")
         thread = threading.Thread(
             target=self._execute,
             args=(task_id, command, timeout),
@@ -65,6 +69,12 @@ class BackgroundManager:
                     "command": command[:80],
                 }
             )
+        if self.runtime_task_manager is not None:
+            self.runtime_task_manager.append_output(task_id, (output or "(no output)") + "\n")
+            if status == "completed":
+                self.runtime_task_manager.complete(task_id)
+            else:
+                self.runtime_task_manager.fail(task_id)
 
     def check(self, task_id: Optional[str] = None) -> str:
         with self._lock:
