@@ -7,6 +7,8 @@ from typing import Any, Dict, List
 
 from .events import build_runtime_event
 from .history import EventHistory
+from .queue import RuntimeEventQueue
+from .runs import RuntimeRunManager
 from .tasks import RuntimeTaskManager
 
 
@@ -31,6 +33,9 @@ class RuntimeState:
         self.permission_mode = "default"
         self.status = "idle"
         self.history = EventHistory(event_path)
+        runtime_root = event_path.parent / "runtime"
+        self.queue = RuntimeEventQueue(runtime_root / "queue")
+        self.runs = RuntimeRunManager(runtime_root / "runs")
         self.tasks = RuntimeTaskManager(tasks_root)
         self._subscribers: List[queue.Queue] = []
 
@@ -53,6 +58,12 @@ class RuntimeState:
     def publish(self, event_type: str, **payload: Any) -> Dict[str, Any]:
         event = build_runtime_event(event_type, session_id=self.session_id, **payload)
         self.history.append(event)
+        priority = "next"
+        if event_type in {"request_started", "request_failed"}:
+            priority = "now"
+        elif event_type in {"task_completed", "teammate_shutdown"}:
+            priority = "later"
+        self.queue.enqueue(event_type, event, target=str(payload.get("target", "")), source="runtime", priority=priority)
         for subscriber in list(self._subscribers):
             subscriber.put(event)
         return event

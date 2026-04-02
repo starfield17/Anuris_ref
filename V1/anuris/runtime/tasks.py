@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .events import utc_timestamp
 
@@ -16,13 +16,20 @@ class TaskRecord:
     id: str
     kind: str
     description: str
+    task_type: str = ""
     status: str = "pending"
     owner: str = ""
+    workspace_root: str = ""
+    worktree_id: str = ""
+    run_id: str = ""
+    parent_run_id: str = ""
     created_at: str = field(default_factory=utc_timestamp)
     updated_at: str = field(default_factory=utc_timestamp)
+    artifact_dir: str = ""
+    transcript_path: str = ""
     output_file: str = ""
     output_offset: int = 0
-    metadata: Dict[str, str] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def touch(self, status: Optional[str] = None) -> None:
         if status:
@@ -37,24 +44,63 @@ class RuntimeTaskManager:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def create(self, task_id: str, kind: str, description: str, owner: str = "") -> TaskRecord:
+    def create(
+        self,
+        task_id: str,
+        kind: str,
+        description: str,
+        owner: str = "",
+        *,
+        task_type: str = "",
+        workspace_root: str = "",
+        worktree_id: str = "",
+        run_id: str = "",
+        parent_run_id: str = "",
+        artifact_dir: str = "",
+        transcript_path: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> TaskRecord:
+        artifact_path = Path(artifact_dir).resolve() if artifact_dir else self.root / task_id
+        artifact_path.mkdir(parents=True, exist_ok=True)
         record = TaskRecord(
             id=task_id,
             kind=kind,
             description=description,
             owner=owner,
-            output_file=str((self.root / f"{task_id}.log").resolve()),
+            task_type=task_type or kind,
+            workspace_root=workspace_root,
+            worktree_id=worktree_id or workspace_root,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            artifact_dir=str(artifact_path),
+            transcript_path=transcript_path,
+            output_file=str((artifact_path / "output.log").resolve()),
+            metadata=dict(metadata or {}),
         )
         self._save(record)
         return record
 
-    def update(self, task_id: str, status: str, owner: Optional[str] = None) -> TaskRecord:
+    def update(
+        self,
+        task_id: str,
+        status: str,
+        owner: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
+        transcript_path: Optional[str] = None,
+    ) -> TaskRecord:
         record = self.get(task_id)
         if record.status in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Task {task_id} is terminal: {record.status}")
         record.touch(status)
         if owner is not None:
             record.owner = owner.strip()
+        if metadata:
+            record.metadata.update(metadata)
+        if run_id is not None:
+            record.run_id = run_id
+        if transcript_path is not None:
+            record.transcript_path = transcript_path
         self._save(record)
         return record
 
