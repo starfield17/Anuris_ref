@@ -20,6 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .live_tui import LiveTurnState, describe_plain_event, render_live_turn
+from .live_tui_controller import LiveRenderController
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class ChatUI:
         self.session = self._create_prompt_session()
         self._live_turn: LiveTurnState | None = None
         self._live_display: Live | None = None
+        self._live_controller: LiveRenderController | None = None
 
     def bind_session(self, session: Any) -> None:
         self._session_ref = session
@@ -338,6 +340,7 @@ class ChatUI:
     def begin_live_turn(self, prompt: str) -> None:
         self._stop_live_display()
         self._live_turn = LiveTurnState(prompt=prompt)
+        self._live_controller = LiveRenderController()
         if self._is_plain_output():
             self.display_activity_event("request", "Streaming response started")
             return
@@ -345,9 +348,10 @@ class ChatUI:
             render_live_turn(self._live_turn, self._palette(), self._session_title()),
             console=self.console,
             refresh_per_second=8,
-            transient=True,
+            transient=False,
         )
         self._live_display.__enter__()
+        self._live_controller.start()
 
     def handle_runtime_event(self, event: Dict[str, Any]) -> None:
         if self._live_turn is None:
@@ -358,11 +362,13 @@ class ChatUI:
             if activity is not None:
                 self.display_activity_event(activity.label, activity.detail, tone=activity.tone)
             return
-        if self._live_display is None:
+        if self._live_display is None or self._live_controller is None:
+            return
+        if not self._live_controller.should_render(str(event.get("type", "") or "")):
             return
         self._live_display.update(
             render_live_turn(self._live_turn, self._palette(), self._session_title()),
-            refresh=True,
+            refresh=False,
         )
 
     def finish_live_turn(self, response: Optional[Dict[str, Any]] = None) -> None:
@@ -370,6 +376,11 @@ class ChatUI:
             return
         if response is not None:
             self._live_turn.complete_from_response(response)
+        if self._live_display is not None and self._live_controller is not None and self._live_controller.flush():
+            self._live_display.update(
+                render_live_turn(self._live_turn, self._palette(), self._session_title()),
+                refresh=False,
+            )
         final_text = self._live_turn.final_text or self._live_turn.assistant_text
         reasoning = self._live_turn.reasoning_text
         self._stop_live_display()
@@ -389,9 +400,11 @@ class ChatUI:
 
     def _stop_live_display(self) -> None:
         if self._live_display is None:
+            self._live_controller = None
             return
         self._live_display.__exit__(None, None, None)
         self._live_display = None
+        self._live_controller = None
 
     def display_assistant_message(self, content: str) -> None:
         if not content.strip():

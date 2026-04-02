@@ -82,6 +82,7 @@ class QueryEngine:
         previous_run_id = getattr(self, "_active_run_id", "")
         self._active_run_id = str((metadata or {}).get("run_id", "") or "")
         try:
+            self.session_store.refresh_task_anchor(prompt, self.services)
             self._record_user_message(prompt, attachments or [], metadata or {})
             runtime_notices = self._drain_runtime_notices()
             prefetched_skills = self._prefetch_skills(prompt)
@@ -155,6 +156,9 @@ class QueryEngine:
                         compaction=progress.compaction,
                     )
                 continuation = continuation_message_for(payload.finish_reason, continuation_count)
+                anchor = self.session_store.continuation_anchor()
+                if continuation and anchor:
+                    continuation = f"{continuation}\n\n{anchor}"
                 if continuation:
                     continuation_count += 1
                     progress = RoundProgress(
@@ -395,6 +399,8 @@ class QueryEngine:
     ) -> List[Dict[str, Any]]:
         api_messages = self.session_store.to_api_messages()
         transient_messages = [
+            *self._task_anchor_messages(),
+            *self._context_anchor_messages(),
             *self._memory_messages(),
             *_notice_messages(runtime_notices),
             *_skill_messages(prefetched_skills),
@@ -437,6 +443,7 @@ class QueryEngine:
         final_segments: List[str],
     ) -> EngineResponse:
         final_text = "".join(final_segments) if final_segments else extract_text_content(content)
+        self.session_store.record_task_progress(final_text, tool_events)
         self.session_store.write_transcript()
         self._emit("assistant_message", content=final_text, round=round_index)
         return EngineResponse(
@@ -445,6 +452,18 @@ class QueryEngine:
             rounds=round_index,
             tool_events=tool_events,
         )
+
+    def _task_anchor_messages(self) -> List[Dict[str, Any]]:
+        anchor_message = self.session_store.task_anchor_message()
+        if not anchor_message:
+            return []
+        return [{"role": "system", "content": anchor_message}]
+
+    def _context_anchor_messages(self) -> List[Dict[str, Any]]:
+        anchor_message = self.session_store.context_anchor_message()
+        if not anchor_message:
+            return []
+        return [{"role": "system", "content": anchor_message}]
 
     def _build_tool_context(
         self,
@@ -509,6 +528,7 @@ class QueryEngine:
         compacted = False
         if self.compaction_controller.micro_compact_tool_results(self.session_store.messages, emergency=emergency):
             compacted = True
+            self.session_store.sync_context_anchor()
             self._emit("tool_results_micro_compacted", compact_mode=compact_mode)
         budget_service = getattr(self.services, "context_budget", None)
         if budget_service is None:

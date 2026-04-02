@@ -136,6 +136,53 @@ class QueryEngineTests(unittest.TestCase):
         self.assertIn("Conversation compacted", summary)
         self.assertEqual(store.messages[1].kind, "compact_boundary")
 
+    def test_session_store_compaction_preserves_task_anchor_sections(self):
+        store = SessionStore("system", self.workspace, "eng3_anchor")
+        self.services.todo_manager.update(
+            [
+                {"content": "Sketch CLI layout", "status": "completed"},
+                {"content": "Implement parser", "status": "in_progress", "activeForm": "Implementing parser"},
+            ]
+        )
+        store.refresh_task_anchor("Build a small CLI project.", self.services)
+        for index in range(12):
+            store.add_user_message(f"user {index}")
+            store.add_assistant_message(f"assistant {index}")
+
+        summary = store.compact_history("preserve the main objective", keep_last=4)
+
+        self.assertIn("Preserved task anchor:", summary)
+        self.assertIn("Original goal: Build a small CLI project.", summary)
+        self.assertIn("Current plan: Implement parser", summary)
+
+    def test_session_store_compaction_restores_recent_file_context(self):
+        store = SessionStore("system", self.workspace, "eng3_restore")
+        mtime_ns = (self.workspace / "sample.txt").stat().st_mtime_ns
+        store.add_tool_result(
+            "read_file",
+            "read_restore",
+            "alpha\nbeta\n",
+            metadata={
+                "path": "sample.txt",
+                "start_line": 1,
+                "end_line": 0,
+                "mtime_ns": mtime_ns,
+                "content_hash": "hash",
+                "unchanged_since_last_read": False,
+            },
+        )
+        for index in range(6):
+            store.add_user_message(f"user {index}")
+            store.add_assistant_message(f"assistant {index}")
+
+        store.compact_history("preserve concrete file context", keep_last=2)
+
+        restored = [message for message in store.messages if message.kind == "context_restore"]
+        self.assertTrue(restored)
+        self.assertTrue(any("Restored file context after compaction" in str(message.content) for message in restored))
+        self.assertTrue(store.can_reuse_file_read(self.workspace / "sample.txt", 1, 0, mtime_ns=mtime_ns))
+        self.assertEqual(store.context_generation, 1)
+
     def test_query_engine_supports_mcp_resource_tools(self):
         mcp_file = self.workspace / "resource.txt"
         mcp_file.write_text("resource body", encoding="utf-8")
@@ -210,6 +257,31 @@ class QueryEngineTests(unittest.TestCase):
         self.assertTrue(any("Queued runtime notices" in str(message.get("content", "")) for message in messages))
         self.assertTrue(any("Relevant available skills" in str(message.get("content", "")) for message in messages))
         self.assertTrue(any(event.get("type") == "skill_prefetch" for event in events))
+
+    def test_query_engine_injects_task_anchor_message(self):
+        self.services.todo_manager.update(
+            [
+                {"content": "Map repo", "status": "completed"},
+                {"content": "Implement CLI", "status": "in_progress", "activeForm": "Implementing CLI"},
+            ]
+        )
+        model = FakeModel([{"choices": [{"message": {"content": "Understood."}}]}])
+        store = SessionStore("system", self.workspace, "eng6_anchor")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        engine.submit("Build a small CLI project.")
+
+        injected = [message.get("content", "") for message in model.calls[0]["messages"]]
+        self.assertTrue(any("Task anchor for the current request" in str(item) for item in injected))
+        self.assertTrue(any("Original goal: Build a small CLI project." in str(item) for item in injected))
+        self.assertTrue(any("Current plan: Implement CLI" in str(item) for item in injected))
 
     def test_query_engine_returns_structured_permission_denial_for_blocked_tool(self):
         model = FakeModel(
@@ -417,6 +489,78 @@ class QueryEngineTests(unittest.TestCase):
         self.assertFalse(tool_messages[0].metadata.get("unchanged_since_last_read"))
         self.assertTrue(tool_messages[1].metadata.get("unchanged_since_last_read"))
         self.assertIn("File unchanged since last read", str(tool_messages[1].content))
+
+    def test_query_engine_re_reads_after_compaction_generation_change(self):
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "read_before")]}}]},
+                {"choices": [{"message": {"content": "Seeded context."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng10d")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        engine.submit("Read the sample file once.")
+        store.compact_history("preserve concrete file context", keep_last=2)
+
+        follow_up_model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "read_after")]}}]},
+                {"choices": [{"message": {"content": "Done after compaction."}}]},
+            ]
+        )
+        engine.model = follow_up_model
+        result = engine.submit("Use the preserved file context.")
+
+        self.assertEqual(result.final_text, "Done after compaction.")
+        last_tool = [message for message in store.messages if message.role == "tool"][-1]
+        self.assertFalse(last_tool.metadata.get("unchanged_since_last_read"))
+        self.assertTrue(str(last_tool.content).startswith("alpha\nbeta"))
+        injected = [message.get("content", "") for message in follow_up_model.calls[0]["messages"]]
+        self.assertTrue(any("Working context currently available" in str(item) for item in injected))
+        self.assertTrue(any("sample.txt" in str(item) for item in injected))
+
+    def test_session_store_load_invalidates_repeat_read_shortcut(self):
+        model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "load_seed")]}}]},
+                {"choices": [{"message": {"content": "Seeded context."}}]},
+            ]
+        )
+        store = SessionStore("system", self.workspace, "eng10e")
+        engine = QueryEngine(
+            model=model,
+            session_store=store,
+            tool_registry=self.tool_registry,
+            services=self.services,
+            workspace_root=self.workspace,
+            config=self.config,
+        )
+
+        engine.submit("Read the sample file once.")
+        snapshot_path = store.save("snapshot.json")
+        store.load(str(snapshot_path))
+
+        follow_up_model = FakeModel(
+            [
+                {"choices": [{"message": {"content": "", "tool_calls": [tool_call("read_file", '{"path":"sample.txt"}', "load_again")]}}]},
+                {"choices": [{"message": {"content": "Done after load."}}]},
+            ]
+        )
+        engine.model = follow_up_model
+        result = engine.submit("Read the file after loading the session.")
+
+        self.assertEqual(result.final_text, "Done after load.")
+        last_tool = [message for message in store.messages if message.role == "tool"][-1]
+        self.assertFalse(last_tool.metadata.get("unchanged_since_last_read"))
+        self.assertGreaterEqual(store.context_generation, 1)
 
     def test_notification_center_drain_for_model_prioritizes_and_preserves_noninjectable_items(self):
         center = NotificationCenter()

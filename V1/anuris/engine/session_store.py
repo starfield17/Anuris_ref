@@ -7,7 +7,20 @@ from typing import Any, Dict, List, Optional
 
 from ..runtime.events import build_runtime_event
 from ..runtime.history import EventHistory, HistoryPage
+from .context_anchor import (
+    build_context_anchor,
+    build_post_compact_restore_messages,
+    can_reuse_file_context,
+    render_context_anchor_message,
+)
 from .messages import ConversationMessage, extract_text_content
+from .task_anchor import (
+    build_task_anchor,
+    render_compaction_summary,
+    render_continuation_anchor,
+    render_task_anchor_message,
+    update_task_anchor_progress,
+)
 
 
 class SessionStore:
@@ -23,12 +36,18 @@ class SessionStore:
         self.messages: List[ConversationMessage] = [
             ConversationMessage(role="system", content=system_prompt, kind="system")
         ]
+        self.task_anchor: Dict[str, Any] = {}
+        self.context_generation = 0
+        self.context_anchor: Dict[str, Any] = {}
         self._persist_snapshot()
         self._record_lifecycle_event("session_initialized", content=system_prompt, role="system")
 
     def reset(self, system_prompt: Optional[str] = None) -> None:
         prompt = system_prompt or self.system_prompt
         self.messages = [ConversationMessage(role="system", content=prompt, kind="system")]
+        self.task_anchor = {}
+        self.context_generation += 1
+        self.context_anchor = {}
         self.write_transcript()
         self._persist_snapshot()
         self._record_lifecycle_event("session_reset", content=prompt, role="system")
@@ -84,7 +103,7 @@ class SessionStore:
         is_error: bool = False,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> ConversationMessage:
-        return self.append(
+        message = self.append(
             ConversationMessage(
                 role="tool",
                 name=tool_name,
@@ -94,6 +113,9 @@ class SessionStore:
                 metadata={"is_error": is_error, **(metadata or {})},
             )
         )
+        self.context_anchor = build_context_anchor(self.messages, self.context_generation)
+        self._persist_snapshot()
+        return message
 
     def to_api_messages(self) -> List[Dict[str, Any]]:
         return [message.to_api_message() for message in self.messages]
@@ -106,6 +128,9 @@ class SessionStore:
         payload = {
             "session_id": self.session_id,
             "title": self.title,
+            "task_anchor": dict(self.task_anchor),
+            "context_generation": self.context_generation,
+            "context_anchor": dict(self.context_anchor),
             "messages": [message.to_dict() for message in self.messages],
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -121,6 +146,10 @@ class SessionStore:
             raise ValueError("Saved session is missing the system prompt message")
         self.messages = messages
         self.title = _normalize_title(payload.get("title"))
+        self.task_anchor = dict(payload.get("task_anchor", {}))
+        loaded_generation = int(payload.get("context_generation", 0) or 0)
+        self.context_generation = loaded_generation + 1
+        self.context_anchor = build_context_anchor(self.messages, self.context_generation)
         self.write_transcript()
         self._persist_snapshot()
         self._record_lifecycle_event("session_loaded", path=str(path))
@@ -134,31 +163,35 @@ class SessionStore:
             return "Context is already compact."
 
         system_message = self.messages[0]
-        tail = self.messages[-keep_last:]
-        removable = self.messages[1:-keep_last]
+        tail_start = self._tail_start_index(keep_last)
+        tail = self.messages[tail_start:]
+        removable = self.messages[1:tail_start]
         if not removable:
             return "Context is already compact."
 
-        lines = ["Conversation compacted into a working summary."]
-        if focus.strip():
-            lines.append(f"Focus: {focus.strip()}")
-        for message in removable:
-            role = message.role.upper()
-            snippet = message.preview(220) or "(empty)"
-            lines.append(f"- {role}: {snippet}")
-            if message.reasoning:
-                lines.append(f"  reasoning: {message.reasoning[:180].replace(chr(10), ' ')}")
-        summary = "\n".join(lines)
+        summary = render_compaction_summary(self.task_anchor, focus, removable)
+        previous_anchor = dict(self.context_anchor)
+        next_generation = self.context_generation + 1
         compact_boundary = ConversationMessage(
             role="system",
             kind="compact_boundary",
             content=summary,
-            metadata={"focus": focus.strip()},
+            metadata={"focus": focus.strip(), "context_generation": next_generation},
         )
-        self.messages = [system_message, compact_boundary, *tail]
+        restored_messages = build_post_compact_restore_messages(
+            previous_anchor,
+            self.workspace_root,
+            next_generation,
+            tail,
+        )
+        self.messages = [system_message, compact_boundary, *restored_messages, *tail]
+        self.context_generation = next_generation
+        self.context_anchor = build_context_anchor(self.messages, self.context_generation)
         self.write_transcript()
         self._persist_snapshot()
         self._record_message_event(compact_boundary)
+        for message in restored_messages:
+            self._record_message_event(message)
         return summary
 
     def retarget_workspace(self, workspace_root: Path) -> None:
@@ -177,6 +210,10 @@ class SessionStore:
             raise ValueError("Saved session is missing the system prompt message")
         self.messages = messages
         self.title = _normalize_title(payload.get("title"))
+        self.task_anchor = dict(payload.get("task_anchor", {}))
+        loaded_generation = int(payload.get("context_generation", 0) or 0)
+        self.context_generation = loaded_generation + 1
+        self.context_anchor = build_context_anchor(self.messages, self.context_generation)
         self.write_transcript()
         self._persist_snapshot()
         self._record_lifecycle_event("snapshot_loaded", path=str(snapshot_path))
@@ -193,6 +230,8 @@ class SessionStore:
             if message.role == "user":
                 user_turns_removed += 1
             removed += 1
+        self.context_generation += 1
+        self.context_anchor = build_context_anchor(self.messages, self.context_generation)
         self.write_transcript()
         self._persist_snapshot()
         self._record_lifecycle_event("session_rewound", turns=turns, removed=removed)
@@ -389,6 +428,12 @@ class SessionStore:
 
     def export_text(self) -> str:
         lines = [f"Session: {self.title or self.session_id}", f"Session ID: {self.session_id}", ""]
+        anchor_text = self.task_anchor_message()
+        if anchor_text:
+            lines.extend(["TASK ANCHOR", "-----------", anchor_text, ""])
+        context_text = self.context_anchor_message()
+        if context_text:
+            lines.extend(["WORKING CONTEXT", "---------------", context_text, ""])
         for message in self.messages:
             title = f"{message.role.upper()} ({message.kind})" if message.kind != "message" else message.role.upper()
             lines.append(title)
@@ -413,6 +458,12 @@ class SessionStore:
             f"- session_id: `{self.session_id}`",
             "",
         ]
+        anchor_text = self.task_anchor_message()
+        if anchor_text:
+            lines.extend(["## TASK ANCHOR", "", anchor_text, ""])
+        context_text = self.context_anchor_message()
+        if context_text:
+            lines.extend(["## WORKING CONTEXT", "", context_text, ""])
         for message in self.messages:
             title = f"{message.role.upper()} ({message.kind})" if message.kind != "message" else message.role.upper()
             lines.append(f"## {title}")
@@ -436,10 +487,66 @@ class SessionStore:
         payload = {
             "session_id": self.session_id,
             "title": self.title,
+            "task_anchor": dict(self.task_anchor),
+            "context_generation": self.context_generation,
+            "context_anchor": dict(self.context_anchor),
             "messages": [message.to_dict() for message in self.messages],
         }
         snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return snapshot_path
+
+    def refresh_task_anchor(self, prompt: str, services: Any) -> None:
+        self.task_anchor = build_task_anchor(prompt, self.session_id, services, self.task_anchor).to_dict()
+
+    def record_task_progress(self, final_text: str, tool_events: List[str]) -> None:
+        self.task_anchor = update_task_anchor_progress(self.task_anchor, final_text, tool_events).to_dict()
+
+    def task_anchor_message(self) -> str:
+        return render_task_anchor_message(self.task_anchor)
+
+    def context_anchor_message(self) -> str:
+        return render_context_anchor_message(self.context_anchor)
+
+    def continuation_anchor(self) -> str:
+        parts = [
+            render_continuation_anchor(self.task_anchor),
+            render_context_anchor_message(self.context_anchor, compact=True),
+        ]
+        return "\n\n".join(part for part in parts if part)
+
+    def can_reuse_file_read(self, path: Path, start_line: int, end_line: int, *, mtime_ns: int) -> bool:
+        return can_reuse_file_context(
+            self.context_anchor,
+            path=self._context_path(path),
+            start_line=start_line,
+            end_line=end_line,
+            mtime_ns=mtime_ns,
+            context_generation=self.context_generation,
+        )
+
+    def sync_context_anchor(self) -> None:
+        self.context_anchor = build_context_anchor(self.messages, self.context_generation)
+        self.write_transcript()
+        self._persist_snapshot()
+
+    def _tail_start_index(self, keep_last: int) -> int:
+        start_index = max(1, len(self.messages) - keep_last)
+        while start_index > 1:
+            current = self.messages[start_index]
+            previous = self.messages[start_index - 1]
+            if current.role != "tool" or previous.role != "assistant":
+                break
+            tool_ids = {item.id for item in previous.tool_calls}
+            if current.tool_call_id not in tool_ids:
+                break
+            start_index -= 1
+        return start_index
+
+    def _context_path(self, path: Path) -> Path:
+        try:
+            return Path(path).resolve().relative_to(self.workspace_root)
+        except Exception:
+            return Path(path)
 
     def _record_message_event(self, message: ConversationMessage) -> None:
         self.event_history.append(

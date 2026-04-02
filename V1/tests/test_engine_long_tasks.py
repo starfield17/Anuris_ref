@@ -176,6 +176,8 @@ class QueryEngineLongTaskTests(unittest.TestCase):
         self.assertEqual(result.rounds, 2)
         continuation_message = next(message for message in store.messages if message.metadata.get("continuation"))
         self.assertTrue(continuation_message.metadata.get("is_meta"))
+        self.assertIn("Current task anchor:", str(continuation_message.content))
+        self.assertIn("Original goal: Produce a long answer.", str(continuation_message.content))
         event_types = [event["type"] for event in events]
         self.assertIn("continuation_scheduled", event_types)
 

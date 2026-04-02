@@ -134,7 +134,14 @@ class ReadFileTool(BaseTool):
         end_line = int(args.get("end_line", 0))
         tracker = _read_tracker_for(context)
         mtime_ns = path.stat().st_mtime_ns
-        if tracker.is_unchanged(path, start_line, end_line, mtime_ns):
+        context_generation = int(getattr(context.session_store, "context_generation", 0) or 0)
+        can_reuse_context = context.session_store.can_reuse_file_read(
+            path,
+            start_line,
+            end_line,
+            mtime_ns=mtime_ns,
+        )
+        if tracker.is_unchanged(path, start_line, end_line, mtime_ns, context_generation) and can_reuse_context:
             return ToolExecutionResult(
                 model_content=UNCHANGED_READ_MESSAGE,
                 summary=f"read_file {path.relative_to(context.workspace_root)}",
@@ -143,6 +150,8 @@ class ReadFileTool(BaseTool):
                     "start_line": start_line,
                     "end_line": end_line,
                     "mtime_ns": mtime_ns,
+                    "context_generation": context_generation,
+                    "context_still_available": True,
                     "unchanged_since_last_read": True,
                 },
             )
@@ -159,6 +168,7 @@ class ReadFileTool(BaseTool):
             end_line,
             mtime_ns=mtime_ns,
             content=content,
+            context_generation=context_generation,
         )
         return ToolExecutionResult(
             model_content=content,
@@ -169,6 +179,8 @@ class ReadFileTool(BaseTool):
                 "end_line": end_line,
                 "mtime_ns": snapshot.mtime_ns,
                 "content_hash": snapshot.content_hash,
+                "context_generation": context_generation,
+                "context_still_available": True,
                 "unchanged_since_last_read": False,
             },
         )

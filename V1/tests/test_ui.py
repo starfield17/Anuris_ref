@@ -2,9 +2,11 @@ import io
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from rich.console import Console
 
+from anuris.live_tui_controller import LiveRenderController
 from anuris.live_tui import LiveTurnState
 from anuris.ui import ChatUI
 
@@ -133,3 +135,40 @@ class ChatUITests(unittest.TestCase):
         self.assertIn("Running read_file", rendered)
         self.assertIn("Plan first.", rendered)
         self.assertIn("Done.", rendered)
+
+    def test_live_render_controller_throttles_frequent_deltas(self):
+        ticks = iter([0.0, 0.0, 0.05, 0.18, 0.20])
+        controller = LiveRenderController(time_fn=lambda: next(ticks), min_refresh_interval_sec=0.1)
+
+        controller.start()
+        self.assertFalse(controller.should_render("assistant_delta"))
+        self.assertFalse(controller.should_render("assistant_delta"))
+        self.assertTrue(controller.should_render("assistant_delta"))
+        self.assertFalse(controller.flush())
+
+    def test_begin_live_turn_uses_non_transient_live_surface(self):
+        ui = self._build_ui(output_style="rich")
+
+        created = {}
+
+        class FakeLive:
+            def __init__(self, renderable, console, refresh_per_second, transient):
+                created["renderable"] = renderable
+                created["refresh_per_second"] = refresh_per_second
+                created["transient"] = transient
+
+            def __enter__(self):
+                created["entered"] = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                created["exited"] = True
+
+            def update(self, renderable, refresh=False):
+                created["updated"] = (renderable, refresh)
+
+        with patch("anuris.ui.Live", FakeLive):
+            ui.begin_live_turn("Inspect the sample file.")
+
+        self.assertTrue(created.get("entered"))
+        self.assertFalse(created["transient"])

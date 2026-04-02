@@ -18,15 +18,27 @@ class ReadSnapshot:
     end_line: int
     mtime_ns: int
     content_hash: str
+    context_generation: int
 
 
 class ReadTracker:
     def __init__(self):
         self._snapshots: dict[tuple[str, int, int], ReadSnapshot] = {}
 
-    def is_unchanged(self, path: Path, start_line: int, end_line: int, mtime_ns: int) -> bool:
+    def is_unchanged(
+        self,
+        path: Path,
+        start_line: int,
+        end_line: int,
+        mtime_ns: int,
+        context_generation: int,
+    ) -> bool:
         snapshot = self._snapshots.get(self._key(path, start_line, end_line))
-        return snapshot is not None and snapshot.mtime_ns == mtime_ns
+        return (
+            snapshot is not None
+            and snapshot.mtime_ns == mtime_ns
+            and snapshot.context_generation == context_generation
+        )
 
     def remember(
         self,
@@ -36,6 +48,7 @@ class ReadTracker:
         *,
         mtime_ns: int,
         content: str,
+        context_generation: int,
     ) -> ReadSnapshot:
         snapshot = ReadSnapshot(
             path=str(path),
@@ -43,6 +56,7 @@ class ReadTracker:
             end_line=end_line,
             mtime_ns=mtime_ns,
             content_hash=sha256(content.encode("utf-8")).hexdigest(),
+            context_generation=context_generation,
         )
         self._snapshots[self._key(path, start_line, end_line)] = snapshot
         return snapshot
