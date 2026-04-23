@@ -1,80 +1,80 @@
 ---
 name: todo-list-csv
-description: 当需要修改项目（增删改文件）并希望将 update_plan 与 CSV 有机同步时使用此技能：在项目根目录创建“{任务名} TO DO list.csv”，用 TODO/IN_PROGRESS/DONE 驱动 plan 的 pending/in_progress/completed，同步推进，全部完成后删除该文件。
+description: Use this skill when you need to modify a project (add/delete/modify files) and want to organically synchronize the update_plan with a CSV: create a "{Task Name} TO DO list.csv" in the project root directory, use TODO/IN_PROGRESS/DONE to drive the plan's pending/in_progress/completed, synchronize progress, and delete the file upon full completion.
 ---
 
 # Todo List CSV
 
-## 目标
+## Objective
 
-在需要修改项目时，用一个位于项目根目录的 CSV 文件把工作拆成可勾选的步骤；在推进过程中持续更新；全部完成后删除该 CSV，避免把临时清单遗留或提交进仓库。
+When project modifications are needed, use a CSV file located in the project root to break down the work into checkable steps; continuously update it during progress; delete the CSV upon full completion to avoid leaving or committing temporary checklists to the repository.
 
-## 触发条件
+## Trigger Conditions
 
-- 开始执行任何会改动项目内容的任务（新增/修改/删除文件、调整配置、修复 bug、实现功能等）
-- 任务具有多个可独立验收的小步骤，且需要显式跟踪完成状态
+- Starting any task that will modify project content (add/modify/delete files, adjust configurations, fix bugs, implement features, etc.)
+- The task has multiple independently verifiable small steps and requires explicit tracking of completion status.
 
-## 工作流（CSV + update_plan 双轨同步）
+## Workflow (CSV + update_plan Dual-Track Synchronization)
 
-### 0) 启用 update_plan 的条件
+### 0) Condition for Enabling update_plan
 
-- 当任务包含 **≥2 个可独立验收步骤** 时，调用 `update_plan` 建立计划并在执行过程中持续更新。
+- When the task contains **≥2 independently verifiable steps**, call `update_plan` to establish a plan and continuously update it during execution.
 
-### 1) 拆解步骤并建立 plan（与 CSV 一一对应）
+### 1) Break Down Steps and Establish Plan (One-to-One Correspondence with CSV)
 
-- 拆成 3–12 条可验收步骤（动词开头，避免过长）。
-- 立即调用 `update_plan` 建立初始 plan：第 1 步 `in_progress`，其余 `pending`。
-- 保持 plan 的每个 `step` 文案与 CSV 的 `item` **完全一致**（便于同步与审计）。
+- Break down into 3–12 verifiable steps (start with a verb, avoid being too long).
+- Immediately call `update_plan` to establish the initial plan: step 1 as `in_progress`, the rest as `pending`.
+- Keep the text of each `step` in the plan **exactly the same** as the `item` in the CSV (for easy synchronization and auditing).
 
-### 2) 在项目根目录创建 `{任务名} TO DO list.csv`
+### 2) Create `{Task Name} TO DO list.csv` in the Project Root Directory
 
-- 确定“任务名”：优先取自用户请求的短标题；必要时做简化（去掉标点、过长截断）。
-- 计算“项目根目录”：优先使用 Git 仓库根目录；非 Git 项目则使用当前工作目录作为根目录。
-- 在项目根目录创建文件：`{任务名} TO DO list.csv`。
+- Determine the "Task Name": preferably take a short title from the user's request; simplify if necessary (remove punctuation, truncate if too long).
+- Calculate the "Project Root Directory": preferably use the Git repository root; for non-Git projects, use the current working directory as the root.
+- Create the file in the project root directory: `{Task Name} TO DO list.csv`.
 
-CSV 表头固定为（首行）：
+The CSV header is fixed as (first row):
 
 `id,item,status,done_at,notes`
 
-- `id`：从 1 开始的整数
-- `item`：单条待办（与 plan 的 `step` 一致）
-- `status`：`TODO` / `IN_PROGRESS` / `DONE`
-- `done_at`：完成时间（ISO 8601，未完成留空）
-- `notes`：可选备注（文件路径、验证方式、PR/commit 等）
+- `id`: Integer starting from 1
+- `item`: Single to-do item (consistent with the plan's `step`)
+- `status`: `TODO` / `IN_PROGRESS` / `DONE`
+- `done_at`: Completion time (ISO 8601, leave blank if not done)
+- `notes`: Optional notes (file path, verification method, PR/commit, etc.)
 
-### 3) 状态机与映射（核心约束）
+### 3) State Machine and Mapping (Core Constraints)
 
-- 仅允许状态流转：`TODO` → `IN_PROGRESS` → `DONE`（避免 `TODO` 直跳 `DONE`）。
-- plan 映射：`TODO`→`pending`，`IN_PROGRESS`→`in_progress`，`DONE`→`completed`。
-- 任意时刻 **最多 1 行** `IN_PROGRESS`；只要仍有未完成项，尽量保持 **恰好 1 行** `IN_PROGRESS`（与 plan 的唯一 `in_progress` 对齐）。
+- Only allow state transitions: `TODO` → `IN_PROGRESS` → `DONE` (avoid jumping directly from `TODO` to `DONE`).
+- Plan mapping: `TODO`→`pending`, `IN_PROGRESS`→`in_progress`, `DONE`→`completed`.
+- At any moment, **at most 1 row** is `IN_PROGRESS`; as long as there are unfinished items, try to keep **exactly 1 row** as `IN_PROGRESS` (aligned with the plan's single `in_progress` step).
 
-### 4) 推进时同步（每完成一项就同步一次）
+### 4) Synchronize During Progress (Synchronize Each Time an Item is Completed)
 
-- 完成当前 `IN_PROGRESS` 项后：
-  1) 更新 CSV（推荐用脚本 `advance` 自动“完成当前项并启动下一项”）
-  2) 从 CSV 生成 plan payload（`plan --normalize`）
-  3) 调用 `update_plan` 使 plan 与 CSV 同步
+- After completing the current `IN_PROGRESS` item:
+  1) Update the CSV (recommended to use the `advance` script to automatically "complete the current item and start the next one")
+  2) Generate the plan payload from the CSV (`plan --normalize`)
+  3) Call `update_plan` to synchronize the plan with the CSV
 
-### 5) 中途变更与暂停
+### 5) Mid-Process Changes and Pauses
 
-- 新增步骤：只做“追加”，避免重排/重编号；同时更新 CSV 与 plan。
-- 暂停等待反馈：保留 CSV；plan 当前步骤保持 `in_progress`，或追加“等待反馈”步骤并置为 `in_progress`。
+- Adding steps: Only perform "appending," avoid reordering/renumbering; update both CSV and plan simultaneously.
+- Pausing for feedback: Keep the CSV; keep the current plan step as `in_progress`, or add a "waiting for feedback" step and set it to `in_progress`.
 
-### 6) 收尾与清理
+### 6) Wrap-up and Cleanup
 
-- 确认所有行均为 `DONE`，再删除该 CSV 文件（脚本 `cleanup` 会在未全 DONE 时拒绝删除）。
-- 调用 `update_plan` 将所有步骤标记为 `completed`，确保对话内计划闭环。
+- Confirm all rows are `DONE`, then delete the CSV file (the `cleanup` script will refuse deletion if not all are DONE).
+- Call `update_plan` to mark all steps as `completed`, ensuring the plan is closed within the conversation.
 
-## 可选自动化脚本
+## Optional Automation Scripts
 
-使用 `scripts/todo_csv.py` 自动创建/更新/清理 CSV（优先用于避免手工编辑出错）。
+Use `scripts/todo_csv.py` to automatically create/update/clean up the CSV (preferred to avoid manual editing errors).
 
-示例命令：
+Example commands:
 
-- 创建清单（默认第 1 条为 IN_PROGRESS）：`python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py init --title "修复登录 bug" --item "复现问题" "加回归测试" "修复实现" "运行测试/构建"`
-- 计算路径：`python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py path --title "修复登录 bug"`
-- 从 CSV 生成 `update_plan` payload（推荐带 `--normalize`）：`python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py plan --file "{csv_path}" --normalize --explanation "同步自 TODO CSV"`
-- 启动指定步骤：`python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py start --file "{csv_path}" --id 2`
-- 推进一步（完成当前 IN_PROGRESS 并启动下一条 TODO）：`python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py advance --file "{csv_path}" --notes "已通过单测"`
-- 查看进度：`python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py status --file "{csv_path}" --verbose`
-- 全部完成后清理：`python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py cleanup --file "{csv_path}"`
+- Create a list (default first item as IN_PROGRESS): `python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py init --title "Fix login bug" --item "Reproduce issue" "Add regression test" "Fix implementation" "Run tests/build"`
+- Calculate path: `python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py path --title "Fix login bug"`
+- Generate `update_plan` payload from CSV (recommended with `--normalize`): `python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py plan --file "{csv_path}" --normalize --explanation "Synced from TODO CSV"`
+- Start a specified step: `python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py start --file "{csv_path}" --id 2`
+- Advance one step (complete current IN_PROGRESS and start next TODO): `python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py advance --file "{csv_path}" --notes "Passed unit test"`
+- Check progress: `python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py status --file "{csv_path}" --verbose`
+- Clean up after full completion: `python3 ~/.codex/skills/todo-list-csv/scripts/todo_csv.py cleanup --file "{csv_path}"`
