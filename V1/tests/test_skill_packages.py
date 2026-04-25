@@ -78,6 +78,28 @@ class DirectorySkillLoaderTests(unittest.TestCase):
             self.assertIn("kind=package", loader.render_catalog())
             self.assertIn("Plan long tasks and keep progress visible.", loader.descriptions())
 
+    def test_directory_skill_with_invalid_yaml_frontmatter_falls_back_to_body(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            skill_dir = workspace / "skills" / "todo-list-csv"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: todo-list-csv\n"
+                "description: Sync update_plan with a CSV: create a todo list file.\n"
+                "---\n"
+                "Use todo list csv.\n",
+                encoding="utf-8",
+            )
+
+            loader = SkillLoader(workspace)
+
+            loaded = loader.load("todo-list-csv")
+            self.assertIn("<skill name=\"todo-list-csv\">", loaded)
+            self.assertIn("Use todo list csv.", loaded)
+            self.assertIn("skills/todo-list-csv/SKILL.md", loader.render_catalog())
+            self.assertIn("No description", loader.descriptions())
+
     def test_directory_skill_overrides_flat_skill_with_same_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)

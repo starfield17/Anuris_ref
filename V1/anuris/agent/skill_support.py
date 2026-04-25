@@ -26,7 +26,10 @@ def parse_skill_file(path: Path) -> tuple[Dict[str, Any], str]:
     match = re.match(r"^---\n(.*?)\n---\n?(.*)", text, re.DOTALL)
     if not match:
         return {}, text.strip()
-    raw_meta = yaml.safe_load(match.group(1)) or {}
+    try:
+        raw_meta = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        raw_meta = {}
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     return meta, match.group(2).strip()
 
